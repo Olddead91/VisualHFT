@@ -7,6 +7,7 @@ namespace VisualHFT.Studies.VPIN.Model
     public class PlugInSettings : ISetting
     {
         public double BucketVolSize { get; set; }
+        public int? NumberOfBuckets { get; set; } // Rolling window size (nullable for backward compat)
         public string Symbol { get; set; }
         public Provider Provider { get; set; }
         public AggregationLevel AggregationLevel { get; set; }

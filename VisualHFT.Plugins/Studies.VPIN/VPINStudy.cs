@@ -15,28 +15,36 @@ using VisualHFT.UserSettings;
 namespace VisualHFT.Studies
 {
     /// <summary>
-    /// The VPIN (Volume-Synchronized Probability of Informed Trading) value is a measure of the imbalance between buy and sell volumes in a given bucket. It's calculated as the absolute difference between buy and sell volumes divided by the total volume (buy + sell) for that bucket.
-    /// 
-    /// Given this definition, the range of VPIN values is between 0 and 1:
-    ///     0: This indicates a perfect balance between buy and sell volumes in the bucket. In other words, the number of buy trades is equal to the number of sell trades.
-    ///     1: This indicates a complete imbalance, meaning all the trades in the bucket are either all buys or all sells.
-    /// Most of the time, the VPIN value will be somewhere between these two extremes, indicating some level of imbalance between buy and sell trades. The closer the VPIN value is to 1, the greater the imbalance, and vice versa.
+    /// VPIN (Volume-Synchronized Probability of Informed Trading) measures order flow toxicity
+    /// using volume-synchronized buckets per Easley, Lopez de Prado & O'Hara (2012).
+    ///
+    /// Formula: VPIN = (1/n) * SUM |V_buy_i - V_sell_i| / V_bucket, over n completed buckets.
+    ///
+    /// Range [0, 1]: 0 = balanced flow, 1 = fully toxic (all buys or all sells).
     /// </summary>
     public class VPINStudy : BasePluginStudy
     {
-        private const string ValueFormat = "N1";
+        private const string ValueFormat = "N2";
         private const string colorGreen = "Green";
         private const string colorWhite = "White";
+        private const int DEFAULT_NUMBER_OF_BUCKETS = 50;
 
         private bool _disposed = false; // to track whether the object has been disposed
         private PlugInSettings _settings;
+        private readonly object _lockBucket = new object();
 
         //variables for calculation
         private decimal _bucketVolumeSize; // The volume size of each bucket
-        private decimal _currentBucketVolume; // The volume size of each bucket
+        private decimal _currentBucketVolume; // Running accumulated volume in current bucket
         private decimal _lastMarketMidPrice = 0; //keep track of market price
         private decimal _currentBuyVolume = 0;
         private decimal _currentSellVolume = 0;
+
+        // Rolling window of completed bucket imbalances: |V_buy - V_sell| / V_bucket
+        private decimal[] _bucketImbalances;
+        private int _bufferIndex = 0;
+        private int _bufferCount = 0;
+        private decimal _rollingSum = 0; // Running sum for O(1) average calculation
 
 
         // Event declaration
@@ -60,6 +68,7 @@ namespace VisualHFT.Studies
 
         public VPINStudy()
         {
+            _bucketImbalances = new decimal[DEFAULT_NUMBER_OF_BUCKETS];
         }
         ~VPINStudy()
         {
@@ -106,43 +115,58 @@ namespace VisualHFT.Studies
                 return;
             if (_settings.Provider.ProviderID != e.ProviderId || _settings.Symbol != e.Symbol)
                 return;
-            if (!e.IsBuy.HasValue) //we do not know what it is
-                return;
-            if (_bucketVolumeSize == 0)
-                _bucketVolumeSize = (decimal)_settings.BucketVolSize;
 
-            decimal bucketOverflow = 0;
-
-
-            _currentBucketVolume += e.Size;
-            if (_currentBucketVolume > _bucketVolumeSize) //We have overflow
+            lock (_lockBucket)
             {
-                bucketOverflow = _currentBucketVolume - _bucketVolumeSize;
-                _currentBucketVolume = _bucketVolumeSize; //Cap it
-                if (e.IsBuy.Value)
-                    _currentBuyVolume += e.Size - bucketOverflow;
-                else
-                    _currentSellVolume += e.Size - bucketOverflow;
-            }
-            else //NO OVERFLOW
-            {
-                if (e.IsBuy.Value)
-                    _currentBuyVolume += e.Size;
-                else
-                    _currentSellVolume += e.Size;
-            }
+                if (_bucketVolumeSize == 0)
+                    _bucketVolumeSize = (decimal)_settings.BucketVolSize;
 
-            DoCalculation(bucketOverflow > 0); // will update vpin
-
-
-            //assign overfowed volume to its proper variable.
-            if (bucketOverflow > 0)
-            {
-                if (e.IsBuy.Value)
-                    _currentBuyVolume = bucketOverflow;
+                // Tick rule: classify using mid-price from the order book
+                // Price >= mid → buy (aggressor lifting the ask)
+                // Price <  mid → sell (aggressor hitting the bid)
+                // Fallback to provider's IsBuy if no mid-price yet
+                bool isBuy;
+                if (_lastMarketMidPrice > 0)
+                    isBuy = e.Price >= _lastMarketMidPrice;
+                else if (e.IsBuy.HasValue)
+                    isBuy = e.IsBuy.Value;
                 else
-                    _currentSellVolume = bucketOverflow;
-                _currentBucketVolume = bucketOverflow;
+                    return; // No classification possible
+
+                decimal remainingSize = e.Size;
+
+                // Assign entire trade to buy or sell for the current bucket portion
+                if (isBuy)
+                    _currentBuyVolume += remainingSize;
+                else
+                    _currentSellVolume += remainingSize;
+                _currentBucketVolume += remainingSize;
+
+                // Complete as many buckets as this trade fills
+                while (_currentBucketVolume >= _bucketVolumeSize && _bucketVolumeSize > 0)
+                {
+                    decimal bucketOverflow = _currentBucketVolume - _bucketVolumeSize;
+
+                    // Trim the overflow from whichever side received it
+                    if (isBuy)
+                        _currentBuyVolume -= bucketOverflow;
+                    else
+                        _currentSellVolume -= bucketOverflow;
+                    _currentBucketVolume = _bucketVolumeSize;
+
+                    DoCalculation(true); // Bucket completed
+
+                    // Start new bucket with the overflow
+                    _currentBuyVolume = 0;
+                    _currentSellVolume = 0;
+                    if (isBuy)
+                        _currentBuyVolume = bucketOverflow;
+                    else
+                        _currentSellVolume = bucketOverflow;
+                    _currentBucketVolume = bucketOverflow;
+                }
+
+                DoCalculation(false); // Interim update with current state
             }
         }
         private void LIMITORDERBOOK_OnDataReceived(OrderBook e)
@@ -152,7 +176,7 @@ namespace VisualHFT.Studies
              * TRANSFORM the incoming object (decouple it)
              * DO NOT hold this call back, since other components depends on the speed of this specific call back.
              * DO NOT BLOCK
-               * IDEALLY, USE QUEUES TO DECOUPLE
+             * IDEALLY, USE QUEUES TO DECOUPLE
              * ***************************************************************************************************
              */
 
@@ -161,19 +185,39 @@ namespace VisualHFT.Studies
             if (_settings.Provider.ProviderID != e.ProviderID || _settings.Symbol != e.Symbol)
                 return;
 
-            _lastMarketMidPrice = (decimal)e.MidPrice;
-            DoCalculation(false); //Interim update -> Just to send update.
+            lock (_lockBucket)
+            {
+                _lastMarketMidPrice = (decimal)e.MidPrice;
+                DoCalculation(false); //Interim update -> Just to send update.
+            }
         }
         private void DoCalculation(bool isNewBucket)
         {
+            // Caller must hold _lockBucket
             if (Status != VisualHFT.PluginManager.ePluginStatus.STARTED) return;
             string valueColor = isNewBucket ? colorGreen : colorWhite;
 
-            decimal vpin = 0;
-            if ((_currentBuyVolume + _currentSellVolume) > 0)
-                vpin = Math.Abs(_currentBuyVolume - _currentSellVolume) / (_currentBuyVolume + _currentSellVolume);
+            if (isNewBucket && _bucketVolumeSize > 0)
+            {
+                // Completed bucket: push imbalance into rolling window
+                decimal bucketImbalance = Math.Abs(_currentBuyVolume - _currentSellVolume) / _bucketVolumeSize;
 
-            // Add to rolling window and remove oldest if size exceeded
+                // Subtract the value being evicted (if buffer is full)
+                if (_bufferCount == _bucketImbalances.Length)
+                    _rollingSum -= _bucketImbalances[_bufferIndex];
+                else
+                    _bufferCount++;
+
+                _bucketImbalances[_bufferIndex] = bucketImbalance;
+                _rollingSum += bucketImbalance;
+                _bufferIndex = (_bufferIndex + 1) % _bucketImbalances.Length;
+            }
+
+            // VPIN = average of completed bucket imbalances in the rolling window
+            decimal vpin = 0;
+            if (_bufferCount > 0)
+                vpin = _rollingSum / _bufferCount;
+
             var newItem = new BaseStudyModel();
             newItem.Value = vpin;
             newItem.Format = ValueFormat;
@@ -181,14 +225,25 @@ namespace VisualHFT.Studies
             newItem.MarketMidPrice = _lastMarketMidPrice;
             newItem.ValueColor = valueColor;
             newItem.AddItemSkippingAggregation = isNewBucket;
+
             AddCalculation(newItem);
         }
         private void ResetBucket()
         {
-            _bucketVolumeSize = 0;
-            _currentSellVolume = 0;
-            _currentBuyVolume = 0;
-            _currentBucketVolume = 0;
+            lock (_lockBucket)
+            {
+                _bucketVolumeSize = 0;
+                _currentSellVolume = 0;
+                _currentBuyVolume = 0;
+                _currentBucketVolume = 0;
+
+                int n = _settings?.NumberOfBuckets ?? DEFAULT_NUMBER_OF_BUCKETS;
+                if (n <= 0) n = DEFAULT_NUMBER_OF_BUCKETS;
+                _bucketImbalances = new decimal[n];
+                _bufferIndex = 0;
+                _bufferCount = 0;
+                _rollingSum = 0;
+            }
         }
         /// <summary>
         /// This method defines how the internal AggregatedCollection should aggregate incoming items.
@@ -238,6 +293,10 @@ namespace VisualHFT.Studies
             {
                 _settings.Provider = new Provider();
             }
+            if (!_settings.NumberOfBuckets.HasValue || _settings.NumberOfBuckets.Value <= 0)
+            {
+                _settings.NumberOfBuckets = DEFAULT_NUMBER_OF_BUCKETS;
+            }
             _settings.AggregationLevel = AggregationLevel.S1; //force to 1 second
         }
 
@@ -251,6 +310,7 @@ namespace VisualHFT.Studies
             _settings = new PlugInSettings()
             {
                 BucketVolSize = 1,
+                NumberOfBuckets = DEFAULT_NUMBER_OF_BUCKETS,
                 Symbol = "",
                 Provider = new ViewModel.Model.Provider(),
                 AggregationLevel = AggregationLevel.S1
@@ -262,6 +322,7 @@ namespace VisualHFT.Studies
             PluginSettingsView view = new PluginSettingsView();
             PluginSettingsViewModel viewModel = new PluginSettingsViewModel(CloseSettingWindow);
             viewModel.BucketVolumeSize = _settings.BucketVolSize;
+            viewModel.NumberOfBuckets = _settings.NumberOfBuckets ?? DEFAULT_NUMBER_OF_BUCKETS;
             viewModel.SelectedSymbol = _settings.Symbol;
             viewModel.SelectedProviderID = _settings.Provider.ProviderID;
             viewModel.AggregationLevelSelection = _settings.AggregationLevel;
@@ -269,14 +330,14 @@ namespace VisualHFT.Studies
             viewModel.UpdateSettingsFromUI = () =>
             {
                 _settings.BucketVolSize = viewModel.BucketVolumeSize;
+                _settings.NumberOfBuckets = viewModel.NumberOfBuckets;
                 _settings.Symbol = viewModel.SelectedSymbol;
                 _settings.Provider = viewModel.SelectedProvider;
                 _settings.AggregationLevel = viewModel.AggregationLevelSelection;
                 _bucketVolumeSize = (decimal)_settings.BucketVolSize;
                 SaveSettings();
 
-                // Start the Reconnection 
-                //  It will allow to reload with the new values
+                // Reload with the new values
                 Task.Run(() =>
                 {
                     ResetBucket();

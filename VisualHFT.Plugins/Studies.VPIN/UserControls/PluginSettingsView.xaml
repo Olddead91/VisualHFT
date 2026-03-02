@@ -19,27 +19,42 @@
                       SelectedItem="{Binding SelectedSymbol, ValidatesOnDataErrors=True, UpdateSourceTrigger=PropertyChanged}"/>
 
             <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
-                <Label Content="Bucket Volumen Size" />
+                <Label Content="Bucket Volume Size" />
                 <TextBlock Text="ℹ️" Cursor="Hand" Margin="10 5 0 0" >
                     <TextBlock.ToolTip>
                         <ToolTip>
                             <StackPanel>
                                 <TextBlock TextWrapping="Wrap" >
-                                <Run FontWeight="Bold">Bucket Size</Run>
+                                <Run FontWeight="Bold">Bucket Volume Size (V)</Run>
                                 <LineBreak />
-                                <Run>The "Bucket Size" represents a predefined quantity or volume of data points or trades. </Run>
-                                <LineBreak />
-                                <Run>When analyzing data, it's often grouped into "buckets" to make it more manageable and to identify patterns or trends over specific intervals.</Run>
+                                <Run>The volume threshold that must accumulate before a bucket completes. Trades are split at bucket boundaries so each bucket contains exactly this volume.</Run>
                                 <LineBreak />
                                 <LineBreak />
-                                <Run FontStyle="Italic">For example, if you're analyzing trade volumes and choose a bucket size of 100, the system will group trades in sets of 100 and then analyze each set as a single unit.</Run>
+                                <Run FontWeight="Bold">Paper Recommendation (ELO 2012)</Run>
+                                <LineBreak />
+                                <Run>V = ADV / n, where ADV = Average Daily Volume and n = Number of Buckets.</Run>
+                                <LineBreak />
+                                <Run>This calibrates each bucket to represent 1/n of a trading day.</Run>
                                 <LineBreak />
                                 <LineBreak />
-                                <Run FontWeight="Bold">How to Use it</Run>
+                                <Run FontWeight="Bold">How to Estimate</Run>
                                 <LineBreak />
-                                <Run>1. Choose a smaller bucket size for more granular analysis. This can help in identifying short-term patterns.</Run>
+                                <Run>1. Observe your instrument's daily traded volume (in base units, e.g., BTC, shares, contracts).</Run>
                                 <LineBreak />
-                                <Run>2. Choose a larger bucket size for a broader overview, which can be useful for spotting long-term trends.</Run>
+                                <Run>2. Divide by Number of Buckets (default 50).</Run>
+                                <LineBreak />
+                                <Run FontStyle="Italic">Example: If BTC/USD trades ~10,000 BTC/day with 50 buckets, set V = 200.</Run>
+                                <LineBreak />
+                                <Run FontStyle="Italic">Example: If a stock trades ~5M shares/day with 50 buckets, set V = 100,000.</Run>
+                                <LineBreak />
+                                <LineBreak />
+                                <Run FontWeight="Bold">Sizing Guidelines</Run>
+                                <LineBreak />
+                                <Run>- Too small: buckets fill in 1-2 trades, VPIN saturates at 1.0 (no mixing of buys/sells).</Run>
+                                <LineBreak />
+                                <Run>- Too large: buckets take too long to fill, VPIN updates infrequently.</Run>
+                                <LineBreak />
+                                <Run>- Aim for each bucket to contain at least 20-50 trades for meaningful buy/sell classification.</Run>
                                 <LineBreak />
                                 </TextBlock>
                             </StackPanel>
@@ -49,7 +64,39 @@
             </StackPanel>
             <TextBox Text="{Binding BucketVolumeSize, ValidatesOnDataErrors=True}" Margin="0,5" />
 
-
+            <StackPanel Orientation="Horizontal" Margin="0,20,0,0">
+                <Label Content="Number of Buckets" />
+                <TextBlock Text="&#x2139;&#xFE0F;" Cursor="Hand" Margin="10 5 0 0" >
+                    <TextBlock.ToolTip>
+                        <ToolTip>
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" >
+                                <Run FontWeight="Bold">Rolling Window Size (n)</Run>
+                                <LineBreak />
+                                <Run>The number of completed volume buckets used to compute VPIN.</Run>
+                                <LineBreak />
+                                <Run>VPIN = (1/n) x SUM |V_buy - V_sell| / V_bucket, averaged over the last n buckets.</Run>
+                                <LineBreak />
+                                <LineBreak />
+                                <Run FontWeight="Bold">Paper Recommendation (ELO 2012)</Run>
+                                <LineBreak />
+                                <Run>n = 50 (default). With V = ADV/50, 50 buckets spans approximately one trading day.</Run>
+                                <LineBreak />
+                                <LineBreak />
+                                <Run FontWeight="Bold">Tuning</Run>
+                                <LineBreak />
+                                <Run>- Fewer buckets (10-30): faster reaction to toxic flow, but noisier signal.</Run>
+                                <LineBreak />
+                                <Run>- More buckets (50-100): smoother signal, better for detecting sustained toxicity.</Run>
+                                <LineBreak />
+                                <Run>- The window and bucket size work together: n x V should represent the lookback volume you care about.</Run>
+                                </TextBlock>
+                            </StackPanel>
+                        </ToolTip>
+                    </TextBlock.ToolTip>
+                </TextBlock>
+            </StackPanel>
+            <TextBox Text="{Binding NumberOfBuckets, ValidatesOnDataErrors=True}" Margin="0,5" />
 
             <Label Content="Aggregation"  Visibility="Hidden"/>
             <ComboBox ItemsSource="{Binding AggregationLevels}" Margin="0,5"

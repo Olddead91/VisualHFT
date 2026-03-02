@@ -14,6 +14,7 @@ namespace VisualHFT.Studies.VPIN.ViewModel
     public class PluginSettingsViewModel : INotifyPropertyChanged, IDataErrorInfo
     {
         private double _bucketVolSize;
+        private int _numberOfBuckets;
         private ObservableCollection<Provider> _providers;
         private ObservableCollection<string> _symbols;
         private VisualHFT.ViewModel.Model.Provider _selectedProvider;
@@ -78,6 +79,16 @@ namespace VisualHFT.Studies.VPIN.ViewModel
                 RaiseCanExecuteChanged();
             }
         }
+        public int NumberOfBuckets
+        {
+            get => _numberOfBuckets;
+            set
+            {
+                _numberOfBuckets = value;
+                OnPropertyChanged(nameof(NumberOfBuckets));
+                RaiseCanExecuteChanged();
+            }
+        }
         public VisualHFT.ViewModel.Model.Provider SelectedProvider
         {
             get => _selectedProvider;
@@ -132,8 +143,12 @@ namespace VisualHFT.Studies.VPIN.ViewModel
                 switch (columnName)
                 {
                     case nameof(BucketVolumeSize):
-                        if (BucketVolumeSize < 0)
-                            return "Bucket Volume Size should be a positive number.";
+                        if (BucketVolumeSize <= 0)
+                            return "Bucket Volume Size must be greater than zero.";
+                        break;
+                    case nameof(NumberOfBuckets):
+                        if (NumberOfBuckets <= 0)
+                            return "Number of Buckets must be greater than zero.";
                         break;
 
                     case nameof(SelectedProvider):
@@ -166,6 +181,7 @@ namespace VisualHFT.Studies.VPIN.ViewModel
         {
             // This checks if any validation message exists for any of the properties
             return string.IsNullOrWhiteSpace(this[nameof(BucketVolumeSize)]) &&
+                   string.IsNullOrWhiteSpace(this[nameof(NumberOfBuckets)]) &&
                    string.IsNullOrWhiteSpace(this[nameof(SelectedProvider)]) &&
                    string.IsNullOrWhiteSpace(this[nameof(SelectedSymbol)]);
 
