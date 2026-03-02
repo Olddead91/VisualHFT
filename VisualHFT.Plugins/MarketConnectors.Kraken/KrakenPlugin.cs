@@ -518,7 +518,7 @@ namespace MarketConnectors.Kraken
             trade.Timestamp = item.Item2.Timestamp.ToLocalTime();
             trade.ProviderId = _settings.Provider.ProviderID;
             trade.ProviderName = _settings.Provider.ProviderName;
-            trade.IsBuy = item.Item2.Quantity > 0;
+            trade.IsBuy = item.Item2.Side == OrderSide.Buy;
             if (_localOrderBooks.TryGetValue(item.Item1, out var lob) && lob != null)
                 trade.MarketMidPrice = lob.MidPrice;
 
