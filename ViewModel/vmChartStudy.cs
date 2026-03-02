@@ -141,11 +141,22 @@ namespace VisualHFT.ViewModels
 
         private void QUEUE_onReadAction(BaseStudyModel item)
         {
+            var dispatcher = System.Windows.Application.Current?.Dispatcher;
+            if (dispatcher == null || dispatcher.CheckAccess())
+            {
+                ProcessQueueItem(item);
+                return;
+            }
+
+            dispatcher.BeginInvoke(new Action(() => ProcessQueueItem(item)), System.Windows.Threading.DispatcherPriority.Background);
+        }
+
+        private void ProcessQueueItem(BaseStudyModel item)
+        {
             try
             {
                 lock (_LOCK)
                 {
-                    // Check if we're disposed or clearing
                     if (_disposed || _seriesMarket == null || _dataByStudy == null || _seriesByStudy == null)
                         return;
 
@@ -159,26 +170,22 @@ namespace VisualHFT.ViewModels
                     if (item.MarketMidPrice > 0)
                         _lastMarketMidPrice = (double)item.MarketMidPrice;
 
-                    // Reuse PlotInfo if possible (avoid allocation)
                     var pointToAdd = _plotInfoPool.Get();
                     pointToAdd.Date = item.Timestamp;
                     pointToAdd.Value = (double)item.Value;
 
                     bool isAddSuccess = _dataByStudy[keyTitle].Add(pointToAdd);
 
-                    // If successfully added, proceed with adding it into the series
                     if (isAddSuccess)
                     {
                         double oaDate = pointToAdd.Date.ToOADate();
 
                         if (item.IsIndependentMetric)
                         {
-                            // Update only the matching series for independent metrics
                             UpdateIndependentSeries(keyTitle, oaDate, pointToAdd, item);
                         }
                         else
                         {
-                            // Update all series for synchronized metrics (backward compatible)
                             UpdateAllSynchronizedSeries(keyTitle, oaDate, pointToAdd, item);
                         }
                     }
