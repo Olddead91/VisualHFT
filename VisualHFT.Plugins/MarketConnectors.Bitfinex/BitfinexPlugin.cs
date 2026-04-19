@@ -76,14 +76,14 @@ namespace MarketConnectors.Bitfinex
             _socketClient = new BitfinexSocketClient(options =>
             {
                 if (_settings.ApiKey != "" && _settings.ApiSecret != "")
-                    options.ApiCredentials = new ApiCredentials(_settings.ApiKey, _settings.ApiSecret);
+                    options.ApiCredentials = new BitfinexCredentials(_settings.ApiKey, _settings.ApiSecret);
                 options.Environment = BitfinexEnvironment.Live;
             });
 
             _restClient = new BitfinexRestClient(options =>
             {
                 if (_settings.ApiKey != "" && _settings.ApiSecret != "")
-                    options.ApiCredentials = new ApiCredentials(_settings.ApiKey, _settings.ApiSecret);
+                    options.ApiCredentials = new BitfinexCredentials(_settings.ApiKey, _settings.ApiSecret);
                 options.Environment = BitfinexEnvironment.Live;
             });
 
