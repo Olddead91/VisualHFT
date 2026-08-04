@@ -12,7 +12,13 @@ using VisualHFT.Commons.Helpers;
 namespace VisualHFT.TriggerEngine
 {
 
-    public record MetricEvent(string Plugin, string Metric, string Exchange, string Symbol, double Value, DateTime Timestamp);
+    // IsReplay marks an observation that EvaluateAllRulesAgainstLatestMetrics
+    // re-presented after a rule-config change, as opposed to a live tick from
+    // RegisterMetric. A replay is a RE-presentation of an observation the engine
+    // has already seen, so it must never re-fire an action that already fired for
+    // it (see ProcessMetric). Defaulted so every existing construction site and
+    // the record's value-equality semantics are unchanged.
+    public record MetricEvent(string Plugin, string Metric, string Exchange, string Symbol, double Value, DateTime Timestamp, bool IsReplay = false);
 
 
     /// <summary>
@@ -32,7 +38,11 @@ namespace VisualHFT.TriggerEngine
         private static readonly List<TriggerRule> lstRule = new();
         private static readonly object ruleLock = new();
 
-        private static readonly ConcurrentDictionary<string, double> LastMetricValues = new();
+        // The OBSERVATION timestamp is stored alongside the value so a config-change
+        // replay can re-present the original observation faithfully instead of
+        // fabricating DateTime.UtcNow — a fabricated timestamp silently advances
+        // sustained-condition windows that no market data ever satisfied.
+        private static readonly ConcurrentDictionary<string, (double Value, DateTime Timestamp)> LastMetricValues = new();
         private static readonly ConcurrentDictionary<string, DateTime> ConditionStartTimes = new();
         private static readonly ConcurrentDictionary<string, DateTime> ActionLastFiredTimes = new();
 
@@ -167,8 +177,10 @@ namespace VisualHFT.TriggerEngine
         private static void ProcessMetric(MetricEvent e)
         {
             string metricKey = $"{e.Plugin}.{e.Metric}.{e.Exchange}.{e.Symbol}";
-            var previous = LastMetricValues.ContainsKey(metricKey) ? LastMetricValues[metricKey] : double.NaN;
-            LastMetricValues[metricKey] = e.Value;
+            var previous = LastMetricValues.TryGetValue(metricKey, out var lastObservation)
+                ? lastObservation.Value
+                : double.NaN;
+            LastMetricValues[metricKey] = (e.Value, e.Timestamp);
 
             var ruleSnapshot = GetRules();
 
@@ -225,6 +237,17 @@ namespace VisualHFT.TriggerEngine
                         }
                         else
                         {
+                            // A replay is a RE-presentation of an observation this action
+                            // already fired on — not new market data. Letting it through
+                            // means every rule-config edit re-fires every rule currently
+                            // in breach whose cooldown has elapsed, raising phantom alerts
+                            // off stale values. Replays may only fire an action that has
+                            // NEVER fired (the first-fire branch above), which is exactly
+                            // the "evaluate a newly added rule against standing state"
+                            // behaviour the replay exists for. Live ticks are unaffected.
+                            if (e.IsReplay)
+                                continue;
+
                             if ((e.Timestamp - lastFireTime) >= cooldown)
                             {
                                 // Cooldown passed, fire again
@@ -378,9 +401,14 @@ namespace VisualHFT.TriggerEngine
                     var metric = parts[1];
                     var exchange = parts[2];
                     var symbol = parts[3];
-                    var value = kvp.Value;
 
-                    var metricEvent = new MetricEvent(plugin, metric, exchange, symbol, value, DateTime.UtcNow);
+                    // Re-present the ORIGINAL observation (value + timestamp), flagged as
+                    // a replay. Stamping DateTime.UtcNow here fabricated an observation
+                    // that no market data produced, which both re-fired already-fired
+                    // actions and advanced sustained-condition windows on wall-clock alone.
+                    var metricEvent = new MetricEvent(
+                        plugin, metric, exchange, symbol,
+                        kvp.Value.Value, kvp.Value.Timestamp, IsReplay: true);
                     _ = MetricChannel.Writer.WriteAsync(metricEvent);
                 }
             });
