@@ -270,70 +270,14 @@ public class HelperCustomQueue<T> : IDisposable
 
                 // Process all available items in batch
                 int processedCount = 0;
-                while (_reader.TryRead(out var item))
+                while (!Volatile.Read(ref _isPaused) &&
+                       _reader.TryRead(out var item))
                 {
                     if (_monitorHealth)
                         Interlocked.Decrement(ref _currentDepth); // Track depth
 
-                    // ✅ FIX: Check pause BEFORE processing, but item is already taken
-                    // If paused mid-batch, we need to process this item then stop
                     if (Volatile.Read(ref _disposed))
                         break;
-
-                    // ✅ FIX: If paused, put item back or process it - choosing to process
-                    // since we already took it (alternative: use Peek if available)
-                    if (Volatile.Read(ref _isPaused))
-                    {
-                        // ✅ FIX: Only re-add if channel is still accepting writes
-                        if (!_reader.Completion.IsCompleted)
-                        {
-                            try
-                            {
-                                if (!_writer.TryWrite(item))
-                                {
-                                    // TryWrite failed - process item to prevent loss
-                                    try
-                                    {
-                                        _actionOnRead(item);
-                                    }
-                                    catch (Exception ex)
-                                    {
-                                        _onError?.Invoke(ex);
-                                    }
-                                }
-                                else
-                                {
-                                    if (_monitorHealth)
-                                        Interlocked.Increment(ref _currentDepth); // Track depth
-                                }
-                            }
-                            catch (ChannelClosedException)
-                            {
-                                // Channel was closed between check and write - process item instead
-                                try
-                                {
-                                    _actionOnRead(item);
-                                }
-                                catch (Exception ex)
-                                {
-                                    _onError?.Invoke(ex);
-                                }
-                            }
-                        }
-                        else
-                        {
-                            // Channel is complete, process the item we already took
-                            try
-                            {
-                                _actionOnRead(item);
-                            }
-                            catch (Exception ex)
-                            {
-                                _onError?.Invoke(ex);
-                            }
-                        }
-                        break;
-                    }
 
                     try
                     {
