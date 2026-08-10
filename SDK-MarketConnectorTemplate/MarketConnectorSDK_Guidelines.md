@@ -1,403 +1,91 @@
-# VisualHFT Market Connector SDK Guidelines
+# VisualHFT Market Connector SDK guide
 
-This document provides comprehensive guidelines for developing market data connector plugins for VisualHFT.
+This guide accompanies the working [Market Connector Template](README.md). Use the template as the source of truth for the current API shape.
 
-## Table of Contents
+## Purpose
 
-1. [Overview](#overview)
-2. [Plugin Architecture](#plugin-architecture)
-3. [Development Workflow](#development-workflow)
-4. [Key Components](#key-components)
-5. [Best Practices](#best-practices)
-6. [Common Patterns](#common-patterns)
-7. [Testing and Debugging](#testing-and-debugging)
-8. [Deployment](#deployment)
-9. [Troubleshooting](#troubleshooting)
+A market connector derives from `BasePluginDataRetriever`. It connects to a venue, maps venue symbols to VisualHFT symbols, and publishes `OrderBook`, `Trade`, and optional order data with `RaiseOnDataReceived(...)`.
 
-## Overview
+## Build from the template
 
-VisualHFT uses a plugin architecture to support multiple market data connectors. Each connector is implemented as a .NET class library that:
+1. Copy `SDK-MarketConnectorTemplate` to `VisualHFT.Plugins/MarketConnectors.<YourExchange>`.
+2. Rename the project, namespace, settings classes, and `TemplateExchangePlugin`.
+3. Set a unique provider ID and provider name in `InitializeDefaultSettings()`.
+4. Add the exchange client package or your own transport code to the project.
+5. Add the new project as a `ProjectReference` in `VisualHFT.csproj`.
 
-- Connects to an exchange's WebSocket/REST API
-- Parses exchange-specific message formats
-- Converts data to VisualHFT common models
-- Provides a settings UI for configuration
-- Handles connection lifecycle and error recovery
+The host scans the directory containing `VisualHFT.exe` for plugin DLLs. A source project reference is the normal way to place a connector there. No separate plugin directory or registration call is required.
 
-### Plugin Lifecycle
+## Lifecycle
 
-1. **Discovery** - VisualHFT scans the plugins folder for compatible DLLs
-2. **Initialization** - Plugin instance is created and default settings loaded
-3. **Configuration** - User configures settings through the UI
-4. **Connection** - Plugin connects to the exchange API
-5. **Data Flow** - Market data is streamed to VisualHFT
-6. **Disconnection** - Plugin gracefully shuts down
+The template separates `StartAsync()` from `InternalStartAsync()`.
 
-## Plugin Architecture
+- In the constructor, call `SetReconnectionAction(InternalStartAsync)`.
+- In `StartAsync()`, publish `eSESSIONSTATUS.CONNECTING`, set `Status` to `STARTING`, then call `InternalStartAsync()`.
+- In `InternalStartAsync()`, open subscriptions and, after they are live, publish `eSESSIONSTATUS.CONNECTED` and set `Status` to `STARTED`.
+- In `StopAsync()`, unsubscribe and dispose clients, publish an empty order-book list if required, publish `eSESSIONSTATUS.DISCONNECTED`, then call `base.StopAsync()`.
+- On a connection failure, call `HandleConnectionLost(reason, exception)`. The base class manages coalescing and retry behavior through the action registered above.
 
-### Core Classes
+Use provider updates through the existing data path:
 
 ```csharp
-// Main plugin class - inherits from BasePluginDataRetriever
-public class YourExchangePlugin : BasePluginDataRetriever
-{
-    // Required properties
-    public override string Name { get; set; }
-    public override string Version { get; set; }
-    public override string Description { get; set; }
-    public override string Author { get; set; }
-    public override ISetting Settings { get; set; }
-    
-    // Core methods
-    public override async Task StartAsync()
-    public override async Task StopAsync()
-}
-
-// Settings class - implements ISetting
-public class YourExchangeSettings : ISetting
-{
-    // Configuration properties with [Description] attributes
-}
-
-// ViewModel for settings UI
-public class PluginSettingsViewModel : INotifyPropertyChanged, IDataErrorInfo
-{
-    // Validation, commands, and UI logic
-}
+RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.CONNECTING));
+RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.CONNECTED));
+RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.DISCONNECTED));
 ```
 
-### Required Interfaces
+`RaiseOnProviderStatusChanged` and `ProviderStatus` are not current connector APIs.
 
-- **IPlugin** - Basic plugin identification and metadata
-- **IDataRetriever** - Data retrieval functionality
-- **ISetting** - Configuration management
-- **INotifyPropertyChanged** - UI data binding support
+## Symbols
 
-## Development Workflow
+The settings template accepts either a raw symbol or a raw and normalised pair:
 
-### 1. Setup
+```text
+BTCUSDT
+BTCUSDT(BTC/USD)
+```
 
-1. Copy the SDK template to a new folder
-2. Rename the project and namespace to match your exchange
-3. Update the .csproj file with your exchange's client library
+Call `ParseSymbols(...)` after loading or changing settings. Use `GetAllNonNormalizedSymbols()` when subscribing to the venue and `GetNormalizedSymbol(rawSymbol)` when publishing market data.
 
-### 2. Implement Connection Logic
+## Publishing data
+
+Build VisualHFT models in your exchange callbacks and publish them with the overload that matches the model.
 
 ```csharp
-public override async Task StartAsync()
+var trade = new Trade
 {
-    Status = ePluginStatus.STARTING;
-    
-    try
-    {
-        // Create WebSocket client
-        _webSocket = new ClientWebSocket();
-        
-        // Connect to exchange endpoint
-        await _webSocket.ConnectAsync(new Uri(Settings.GetWebSocketUrl()), CancellationToken.None);
-        
-        // Send subscription messages
-        await SubscribeToOrderBook();
-        await SubscribeToTrades();
-        
-        // Start receive loop
-        _ = Task.Run(ReceiveLoop);
-        
-        Status = ePluginStatus.STARTED;
-        RaiseOnProviderStatusChanged(new ProviderStatus(ePluginStatus.STARTED, "Connected"));
-    }
-    catch (Exception ex)
-    {
-        Status = ePluginStatus.STOPPED;
-        log.Error("Failed to start plugin", ex);
-        throw;
-    }
-}
+    ProviderId = _settings.Provider.ProviderID,
+    ProviderName = _settings.Provider.ProviderName,
+    Symbol = normalizedSymbol,
+    Price = price,
+    Size = size,
+    IsBuy = isBuy,
+    Timestamp = DateTime.UtcNow
+};
+
+RaiseOnDataReceived(trade);
 ```
 
-### 3. Parse Messages
+For order books, keep one `OrderBook` per symbol, apply deltas with `AddOrUpdateLevel(...)` and `DeleteLevel(...)`, then publish the updated book. See the existing Bitfinex, Binance, Kraken, and Coinbase connectors for concrete exchange-specific patterns.
+
+Do not block the exchange callback while doing network, disk, or UI work. Keep symbol precision from the venue data rather than hard-coding it.
+
+## Settings and UI
+
+`LoadSettings()`, `SaveSettings()`, and `InitializeDefaultSettings()` are required base-class overrides. The template also supplies a WPF settings view and view model. Keep secrets out of source control and validate user-entered settings before starting a connection.
+
+## Required license level
+
+The plugin manager reads `IPlugin.RequiredLicenseLevel` when loading a DLL. `BasePluginDataRetriever` defaults to `eLicenseLevel.COMMUNITY`. Keep that default, or make it explicit, for a connector intended for this public repository.
 
 ```csharp
-private async Task ReceiveLoop()
-{
-    var buffer = new byte[4096];
-    
-    while (_webSocket.State == WebSocketState.Open)
-    {
-        var result = await _webSocket.ReceiveAsync(new ArraySegment<byte>(buffer), CancellationToken.None);
-        
-        if (result.MessageType == WebSocketMessageType.Text)
-        {
-            var json = Encoding.UTF8.GetString(buffer, 0, result.Count);
-            var parsed = JsonParser.ParseMessage(json, ProviderId, Name);
-            
-            if (parsed != null)
-            {
-                RaiseOnDataReceived(parsed);
-            }
-        }
-    }
-}
+public override eLicenseLevel RequiredLicenseLevel => eLicenseLevel.COMMUNITY;
 ```
 
-### 4. Handle Settings
+## Before submitting
 
-```csharp
-protected override void InitializeDefaultSettings()
-{
-    Settings = new YourExchangeSettings
-    {
-        ApiKey = string.Empty,
-        ApiSecret = string.Empty,
-        Symbols = "BTC-USD,ETH-USD",
-        DepthLevels = 20
-    };
-}
-```
-
-## Key Components
-
-### JsonParser
-
-Responsible for converting exchange-specific JSON to VisualHFT models:
-
-- **OrderBook** - Order book snapshots and updates
-- **Trade** - Individual trade executions
-- **ErrorMessage** - Exchange error messages
-- **SubscriptionMessage** - Subscription confirmations
-
-### Settings UI
-
-WPF user control that allows users to configure:
-- API credentials
-- Symbol subscriptions
-- Connection parameters
-- Advanced options
-
-### Error Handling
-
-Implement robust error handling for:
-- Connection failures
-- Authentication errors
-- Data parsing errors
-- Rate limiting
-- Exchange maintenance
-
-## Best Practices
-
-### Performance
-
-1. **Use object pooling** for frequently allocated objects
-2. **Minimize allocations** in hot paths (use structs, Span<T>)
-3. **Batch operations** where possible
-4. **Use async/await** correctly to avoid blocking
-5. **Implement backpressure** handling for high-volume data
-
-### Reliability
-
-1. **Implement reconnection logic** with exponential backoff
-2. **Validate all data** before publishing
-3. **Handle sequence gaps** in order book updates
-4. **Log errors** with sufficient context
-5. **Provide graceful degradation** when partial data is available
-
-### Security
-
-1. **Never hardcode credentials** - use settings only
-2. **Secure API keys** in transit (use WSS)
-3. **Validate user inputs** to prevent injection
-4. **Use least privilege** for API permissions
-5. **Consider rate limiting** to avoid API bans
-
-### Code Quality
-
-1. **Follow C# naming conventions**
-2. **Add XML documentation** for public APIs
-3. **Use meaningful variable names**
-4. **Keep methods small and focused**
-5. **Write unit tests** for critical logic
-
-## Common Patterns
-
-### Symbol Normalization
-
-Convert exchange-specific symbols to a standard format:
-
-```csharp
-private string NormalizeSymbol(string exchangeSymbol)
-{
-    // Remove exchange prefixes/suffixes
-    var normalized = exchangeSymbol.Replace("t", "").Replace("f", "");
-    
-    // Add separator if missing
-    if (!normalized.Contains("/") && !normalized.Contains("-"))
-    {
-        // Common patterns
-        if (normalized.EndsWith("USDT"))
-            return normalized.Replace("USDT", "/USDT");
-        if (normalized.EndsWith("USD"))
-            return normalized.Replace("USD", "/USD");
-        if (normalized.EndsWith("BTC"))
-            return normalized.Replace("BTC", "/BTC");
-    }
-    
-    return normalized;
-}
-```
-
-### Reconnection Logic
-
-```csharp
-private async Task HandleDisconnection()
-{
-    if (_reconnectionAttempts >= MaxReconnectionAttempts)
-    {
-        Status = ePluginStatus.STOPPED;
-        RaiseOnProviderStatusChanged(new ProviderStatus(ePluginStatus.STOPPED, "Max reconnection attempts reached"));
-        return;
-    }
-    
-    _reconnectionAttempts++;
-    var delay = Math.Min(1000 * Math.Pow(2, _reconnectionAttempts), 30000);
-    
-    await Task.Delay(delay);
-    
-    try
-    {
-        await StartAsync();
-        _reconnectionAttempts = 0;
-    }
-    catch
-    {
-        await HandleDisconnection();
-    }
-}
-```
-
-### Rate Limiting
-
-```csharp
-private readonly SemaphoreSlim _rateLimiter = new SemaphoreSlim(10, 10); // 10 requests per second
-
-private async Task SendWithRateLimit(string message)
-{
-    await _rateLimiter.WaitAsync();
-    try
-    {
-        await _webSocket.SendAsync(Encoding.UTF8.GetBytes(message), WebSocketMessageType.Text, true, CancellationToken.None);
-    }
-    finally
-    {
-        _ = Task.Delay(100).ContinueWith(_ => _rateLimiter.Release());
-    }
-}
-```
-
-## Testing and Debugging
-
-### Unit Testing
-
-Test your parser with sample messages:
-
-```csharp
-[Test]
-public void ParseOrderBookSnapshot_ReturnsCorrectModel()
-{
-    var json = File.ReadAllText("SampleMessages/OrderBookSnapshot.json");
-    var result = JsonParser.ParseMessage(json, 1, "TestExchange");
-    
-    Assert.IsInstanceOf<OrderBook>(result);
-    var orderBook = (OrderBook)result;
-    Assert.AreEqual("BTC/USD", orderBook.Symbol);
-    Assert.IsTrue(orderBook.Bids.Count > 0);
-    Assert.IsTrue(orderBook.Asks.Count > 0);
-}
-```
-
-### Integration Testing
-
-1. **Use testnet/sandbox** environments
-2. **Test with real API keys** (separate from production)
-3. **Verify data accuracy** against exchange UI
-4. **Test error scenarios** (invalid symbols, network issues)
-
-### Debugging Tips
-
-1. **Enable debug logging** in settings
-2. **Log raw messages** before parsing
-3. **Use Visual Studio debugger** with breakpoints
-4. **Monitor memory usage** for leaks
-5. **Check WebSocket state** regularly
-
-## Deployment
-
-### Build Configuration
-
-```xml
-<PropertyGroup>
-    <TargetFramework>net8.0-windows8.0</TargetFramework>
-    <UseWPF>true</UseWPF>
-    <Nullable>enable</Nullable>
-</PropertyGroup>
-```
-
-### Distribution
-
-1. **Build in Release mode**
-2. **Copy DLL to plugins folder**
-3. **Include any dependencies** (NuGet packages)
-4. **Test loading** in VisualHFT
-
-### Versioning
-
-Use semantic versioning (MAJOR.MINOR.PATCH):
-- **MAJOR** - Breaking changes
-- **MINOR** - New features
-- **PATCH** - Bug fixes
-
-## Troubleshooting
-
-### Common Issues
-
-**Plugin not discovered**
-- Check .NET version compatibility
-- Verify DLL is in plugins folder
-- Ensure VisualHFT.Commons is referenced
-
-**Connection fails**
-- Verify API credentials
-- Check firewall/proxy settings
-- Validate endpoint URLs
-
-**Data not appearing**
-- Check symbol format
-- Verify subscription messages
-- Look for parsing errors in logs
-
-**Performance issues**
-- Profile memory allocations
-- Check for blocking calls
-- Optimize hot paths
-
-### Getting Help
-
-1. **Check the logs** in VisualHFT log folder
-2. **Review sample implementations** (Binance, Kraken)
-3. **Search existing issues** on GitHub
-4. **Create a detailed bug report** with:
-   - Exchange name
-   - Plugin version
-   - Steps to reproduce
-   - Log files
-   - Sample messages
-
-## Additional Resources
-
-- [VisualHFT Documentation](https://docs.visualhft.com)
-- [Exchange API Documentation] (your exchange's docs)
-- [WebSocket Best Practices](https://tools.ietf.org/html/rfc6455)
-- [C# Async Programming](https://docs.microsoft.com/en-us/dotnet/csharp/async)
-
----
-
-Remember: This is a living document. Update it as you discover new patterns or best practices while developing your connector!
+- Verify that the provider transitions through connecting, connected, and disconnected states.
+- Test every configured raw-to-normalised symbol mapping.
+- Confirm that order books and trades carry the expected provider and normalised symbol.
+- Build the connector and verify it appears when the host starts.
+- Add focused tests where the connector has testable parsing or state logic.

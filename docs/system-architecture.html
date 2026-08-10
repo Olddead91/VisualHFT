@@ -101,8 +101,8 @@
                         <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                             <div class="bg-white rounded-lg shadow-lg p-6 space-y-6">
                                 <div class="bg-white p-6 rounded-lg shadow-md">
-                                    <h3 class="text-xl font-bold text-[#0d0c22]">Concurrency: `BlockingCollection&lt;T&gt;`</h3>
-                                    <p class="mt-2 text-gray-600">The system uses `BlockingCollection&lt;T&gt;` for its core producer-consumer queue. This provides an efficient, thread-safe mechanism for passing data from Data Retriever threads to consumer threads without manual locking, eliminating contention and reducing CPU overhead.</p>
+                                    <h3 class="text-xl font-bold text-[#0d0c22]">Concurrency: decoupled processing</h3>
+                                    <p class="mt-2 text-gray-600">Connectors publish normalized market data through shared helper services. Studies use their own processing queues and snapshots so calculations do not block incoming market-data callbacks.</p>
                                 </div>
                                 <div class="bg-white p-6 rounded-lg shadow-md">
                                     <h3 class="text-xl font-bold text-[#0d0c22]">Memory Management: Custom Object Pools</h3>
@@ -111,14 +111,14 @@
                             </div>
                             <div class="bg-white rounded-lg shadow-lg p-6">
                                 <h3 class="text-xl font-bold text-[#0d0c22]">Optimized LOB Data Structure</h3>
-                                <p class="mt-2 text-gray-600 mb-4">The Limit Order Book is implemented with a combination of data structures to achieve optimal time complexity for all critical operations.</p>
+                                <p class="mt-2 text-gray-600 mb-4">Order books are updated in place as market data arrives. Plugins that need to process data away from the incoming callback use an independent snapshot.</p>
                                 <div class="bg-[#1e293b] text-[#e2e8f0] p-4 rounded-lg font-mono text-sm whitespace-pre-wrap leading-relaxed">
-                                    <p><span class="text-cyan-400">1. Price Levels:</span> `SortedDictionary&lt;decimal, IOrderBookLevel&gt;`</p>
-                                    <p class="text-gray-400 ml-4">// O(log M) for level lookups</p>
-                                    <p class="mt-2"><span class="text-cyan-400">2. Orders at Price:</span> `LinkedList&lt;Order&gt;`</p>
-                                    <p class="text-gray-400 ml-4">// O(1) for FIFO additions/removals</p>
-                                    <p class="mt-2"><span class="text-cyan-400">3. Direct Order Lookup:</span> `Dictionary&lt;string, Order&gt;`</p>
-                                    <p class="text-gray-400 ml-4">// O(1) for cancellations/updates</p>
+                                    <p><span class="text-cyan-400">1. Incoming update:</span> an `OrderBook` is updated by its connector.</p>
+                                    <p class="text-gray-400 ml-4">// connector code owns the venue-specific delta logic</p>
+                                    <p class="mt-2"><span class="text-cyan-400">2. Shared view:</span> helper services publish the updated book.</p>
+                                    <p class="text-gray-400 ml-4">// dashboard and studies subscribe to the same normalized data</p>
+                                    <p class="mt-2"><span class="text-cyan-400">3. Study work:</span> a study takes a disposable `OrderBookSnapshot`.</p>
+                                    <p class="text-gray-400 ml-4">// calculations run outside the data-feed callback</p>
                                 </div>
                             </div>
                         </div>
@@ -128,7 +128,7 @@
                     <div id="Plugins" class="page-content">
                         <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">The Plugin Ecosystem: A Framework for Extensibility</h2>
                         <div class="bg-white rounded-lg shadow-lg p-8">
-                            <p class="text-center text-gray-600 mb-8">The `PluginManager` orchestrates the entire ecosystem. At startup, it scans a `/plugins` directory, uses reflection to find all types implementing `IPlugin`, and manages their lifecycle (`Initialize`, `Start`, `Stop`).</p>
+                            <p class="text-center text-gray-600 mb-8">The `PluginManager` orchestrates the ecosystem. At startup, it scans the directory containing `VisualHFT.exe`, uses reflection to find non-abstract types implementing `IPlugin`, and manages their lifecycle (`StartAsync`, `StopAsync`).</p>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                                 <div class="border-dashed border-2 border-gray-400 p-6 rounded-lg text-center">
                                     <h3 class="text-xl font-bold text-gray-700">Data Retriever Plugin</h3>
@@ -170,7 +170,7 @@
                             <div class="bg-white rounded-lg shadow-lg p-8">
                                 <h3 class="text-xl font-bold text-[#0d0c22] mb-4">Core Stack</h3>
                                 <ul class="space-y-4 text-gray-600">
-                                    <li><span class="font-bold text-gray-800">Framework:</span> .NET 7.0</li>
+                                    <li><span class="font-bold text-gray-800">Framework:</span> .NET 10</li>
                                     <li><span class="font-bold text-gray-800">Language:</span> C#</li>
                                     <li><span class="font-bold text-gray-800">UI:</span> Windows Presentation Foundation (WPF)</li>
                                     <li><span class="font-bold text-gray-800">Pattern:</span> Model-View-ViewModel (MVVM)</li>

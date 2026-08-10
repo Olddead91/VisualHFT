@@ -1,125 +1,52 @@
 # Contributing to VisualHFT
 
-First off, thanks for taking the time to contribute!
+VisualHFT is built to make real-time market microstructure visible, explainable, and actionable. Contributions to code, documentation, connectors, and studies are welcome.
 
+## Start here
 
-Welcome! Whether you're here to fix a bug, propose a new feature, or build something major — thank you.
+1. Read [Getting started](docs/getting-started.md) and build the solution locally.
+2. Check [GitHub Issues](https://github.com/visualHFT/VisualHFT/issues) and [GitHub Discussions](https://github.com/visualHFT/VisualHFT/discussions) before opening a new proposal.
+3. Fork the repository and create a branch from `master`.
+4. Keep each pull request focused. Explain the problem, the change, and how you validated it.
 
-We’re building VisualHFT to make real-time market microstructure visible, explainable, and actionable.
+## Good contribution areas
 
-This repo is open for contributions, but we also offer a high-trust, high-responsibility equity track for long-term builders. More on that below.
+| Area | Examples |
+| --- | --- |
+| Documentation | Setup fixes, examples, architecture clarification |
+| Connectors | Market-data sources, symbol mapping, resilient connection handling |
+| Studies | Market-microstructure indicators and visualization improvements |
+| Quality | Tests, accessibility, diagnostics, and maintainability |
 
-## Quick Start
-1. Fork the repo
-2. Clone locally and follow setup in /docs
-3. Open an issue if you're unsure where to start
-4. Submit a clean pull request with context and motivation
-5. Be kind. Stay async. Respect the product’s direction.
+Use the [extension templates](docs/extending/README.md) for a new market connector or study.
 
-## Types of Contributions
+## Development workflow
 
-| Type | Examples |
-|------|----------|
-| **Minor Fixes** | Bug fixes, README clarifications, refactors |
-| **Infra Improvements** | Latency handling, connectors (e.g., Kafka, FIX, ITCH) |
-| **Quant Signals** | New microstructure indicators, replay features |
-| **Visual Modules** | UI improvements, execution slippage layers, etc. |
-| **Feature Proposals** | Open an issue with your idea + motivation |
-
-
----
-
-## 🧠 Partner Quant Program (Equity)
-
-If you're here to **build something substantial** — and stay involved — consider applying to the [Partner Quant Program](PartnerQuantProgram.md).
-
-This program grants real **equity in VisualHFT** for those who:
-- Build production-grade modules
-- Stick around to evolve + maintain them
-- Operate like pre-funding technical cofounders
-
-> ⚠️ This is not a paid role. Equity only.
-> Cash roles may become available once the company is funded or profitable.🔗 **[Learn more and apply →](PartnerQuantProgram.md)**
-
----
-
-
-
-## Issues
-
-Issues are created [here](https://github.com/silahian/VisualHFT/issues/).
-
-
-
-## Pull Requests
-
-Pull Requests are the way concrete changes are made to the code, documentation,
-dependencies, and tools contained in the `silahian/VisualHFT` repository.
-
-### Setting up your local environment
-#### Step 1: Fork
-
-Fork the project on GitHub and clone your fork locally.
-```
-git clone git@github.com:username/VisualHFT.git
+```powershell
+git clone https://github.com/<your-account>/VisualHFT.git
 cd VisualHFT
-git remote add upstream https://github.com/silahian/VisualHFT.git
+git remote add upstream https://github.com/visualHFT/VisualHFT.git
 git fetch upstream
+git checkout -b my-branch upstream/master
 ```
-  #### Step 2: Build
-  Open up the `VisualHFT.sln` file with [Visual Studio Community 2022](https://visualstudio.microsoft.com/vs/community/). Press `F6` to build or from the menu `Build/ Build Solution` 
-  #### Step 3: Branch
-To keep your development environment organized, create local branches to hold your work. These should be branched directly off of the main branch.
-```
-git checkout -b my-branch -t upstream/master
-```
-### Making Changes
-#### Step 4: Code
-Do the work!
-#### Step 5: Commit
-It is recommended to keep your changes grouped logically within individual commits. Many contributors find it easier to review changes that are split across multiple commits. There is no limit to the number of commits in a pull request.
 
-Use the `Git Changes` tab in Visual Studio to make your commits. Visual Studio does the heavy lifting of adding new files and all changes to the commit. 
-##### Commit message guidelines
-A good commit message should describe what changed and why.
-Common prefixes:
+Before opening a pull request, build the affected project or solution and run the relevant tests. Keep commit messages clear. Common prefixes include `fix:`, `feat:`, `docs:`, `test:`, `build:`, `ci:`, `perf:`, and `refactor:`.
 
-* fix: A bug fix
-* feat: A new feature
-* docs: Documentation changes
-* test: Adding missing tests or correcting existing tests
-* build: Changes that affect the build system
-* ci: Changes to our CI configuration files and scripts
-* perf: A code change that improves performance
-* refactor: A code change that neither fixes a bug nor adds a feature
-* style: Changes that do not affect the meaning of the code (linting)
+## Pull requests
 
-#### Step 6: Rebase
-Once you have committed your changes, it is a good idea to use `git rebase` (not `git merge`) to synchronize your work with the main repository.
-```
-git fetch upstream
-git rebase upstream/master
-```
-#### Step 7: Test
-Test your code by ensuring the application builds successfully and completes the requirements to the best of your ability. 
+Pull requests should include:
 
-#### Step 8: Push
-Once your commits are ready to go begin the process of opening a pull request by pushing your working branch to your fork on GitHub.
+- A concise summary of the user or engineering problem.
+- The change made and any important tradeoff.
+- Validation performed, including the command when practical.
+- Tests for behavior changes.
 
-```
-git push origin my-branch
-```
-#### Step 9: Opening the Pull Request
-From within GitHub, navigate to your forked repository and press the button to open a pull request.
+Do not change established input JSON message formats unless there is a compelling compatibility plan and community agreement. New message types are preferred when they avoid breaking existing installations.
 
-#### Step 10: Discuss and Update
-You will probably get feedback or requests for changes to your pull request. This is a big part of the submission process so don't be discouraged! Some contributors may sign off on the pull request right away. Others may have detailed comments or feedback. This is a necessary part of the process in order to evaluate whether the changes are correct and necessary.
+## Community
 
-To make changes to an existing pull request, make the changes to your local branch, add a new commit with those changes, and push those to your fork. GitHub will automatically update the pull request.
+- Ask questions in [VisualHFT Discord](https://visualhft.com/discord).
+- Discuss ideas in [GitHub Discussions](https://github.com/visualHFT/VisualHFT/discussions).
+- Report reproducible bugs in [GitHub Issues](https://github.com/visualHFT/VisualHFT/issues).
 
-
-### Congratulations and thanks for your contribution!
-
-## Style Guides
-
-TODO
+For long-term collaboration, see the [Partner Quant Program](PartnerQuantProgram.md).
