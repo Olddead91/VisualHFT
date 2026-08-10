@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VisualHFT: Interactive Architectural Blueprint</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
@@ -51,28 +50,28 @@
 
                     <!-- Architecture Page -->
                     <div id="Architecture" class="page-content active">
-                        <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">System Architecture: The Three Tiers</h2>
+                        <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">System Architecture</h2>
                         <div class="grid grid-cols-1 md:grid-cols-3 gap-8 items-start">
                             <div class="bg-white p-6 rounded-lg shadow-lg border-t-4 border-[#4f46e5] h-full text-center">
-                                <h3 class="text-xl font-bold text-[#4f46e5]">1. Presentation Layer (WPF)</h3>
-                                <p class="mt-2 text-sm text-gray-600">The user-facing GUI, built with a strict MVVM pattern. Views (`.xaml`) are decoupled from logic (`ViewModels`), with data binding automated by Fody for clean, maintainable code.</p>
+                                <h3 class="text-xl font-bold text-[#4f46e5]">1. Desktop host</h3>
+                                <p class="mt-2 text-sm text-gray-600">The WPF application starts VisualHFT, hosts the dashboard, loads plugins, and owns the trigger-engine configuration.</p>
                             </div>
                             <div class="bg-white p-6 rounded-lg shadow-lg border-t-4 border-[#10b981] h-full text-center">
-                                <h3 class="text-xl font-bold text-[#10b981]">2. Core Services Engine</h3>
-                                <p class="mt-2 text-sm text-gray-600">The central nervous system. Manages the plugin lifecycle (`PluginManager`) and orchestrates data flow via a high-speed, in-memory Pub/Sub data bus (`Helper` classes).</p>
+                                <h3 class="text-xl font-bold text-[#10b981]">2. Shared libraries</h3>
+                                <p class="mt-2 text-sm text-gray-600"><code>VisualHFT.Commons</code> owns shared models, helpers, and plugin contracts. <code>VisualHFT.Commons.WPF</code> adds reusable WPF support on top of Commons.</p>
                             </div>
                             <div class="bg-white p-6 rounded-lg shadow-lg border-t-4 border-[#ef4444] h-full text-center">
-                                <h3 class="text-xl font-bold text-[#ef4444]">3. Plugin Ecosystem</h3>
-                                <p class="mt-2 text-sm text-gray-600">Dynamically loaded DLLs that extend functionality. `Data Retrievers` connect to external sources, while `Studies` perform complex, real-time analytics.</p>
+                                <h3 class="text-xl font-bold text-[#ef4444]">3. Plugin assemblies</h3>
+                                <p class="mt-2 text-sm text-gray-600">Connector plugins ingest venue data. Study plugins calculate live analytics. Both use the shared contracts and are discovered beside the application executable.</p>
                             </div>
                         </div>
                     </div>
 
                     <!-- Data Flow Page -->
                     <div id="Data Flow" class="page-content">
-                        <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">Real-Time Data Flow: The Pub/Sub Bus</h2>
+                        <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">Market Data and Results</h2>
                         <div class="bg-white rounded-lg shadow-lg p-8">
-                            <p class="text-center text-gray-600 mb-8">Data flows unidirectionally from producers to consumers via a decoupled, event-driven bus implemented with singleton `Helper` classes. This ensures modularity and real-time responsiveness.</p>
+                            <p class="text-center text-gray-600 mb-8">Connectors publish normalised order books, trades, providers, and symbols through their matching shared helpers. Dashboard view models and studies subscribe to those helpers. Studies emit <code>BaseStudyModel</code> results for live views and trigger evaluation.</p>
                             <div class="grid grid-cols-1 md:grid-cols-5 gap-4 items-center text-center">
                                 <div class="bg-white p-4 rounded-lg shadow">
                                     <p class="text-3xl">🔌</p>
@@ -82,14 +81,14 @@
                                 <div class="text-3xl font-bold text-gray-400">→</div>
                                 <div class="bg-indigo-100 border-2 border-indigo-500 p-4 rounded-lg shadow-lg">
                                     <p class="text-3xl">🚌</p>
-                                    <p class="font-bold text-indigo-700 mt-2">Data Bus</p>
-                                    <p class="text-xs text-gray-500">`Helper` Class</p>
+                                    <p class="font-bold text-indigo-700 mt-2">Shared Helpers</p>
+                                    <p class="text-xs text-gray-500">OrderBook, Trade, Provider, Symbol</p>
                                 </div>
                                 <div class="text-3xl font-bold text-gray-400">→</div>
                                 <div class="bg-white p-4 rounded-lg shadow">
                                     <p class="text-3xl">📈</p>
                                     <p class="font-bold mt-2 text-green-700">Consumers</p>
-                                    <p class="text-xs text-gray-500">UI & Study Plugins</p>
+                                    <p class="text-xs text-gray-500">Dashboard and study plugins</p>
                                 </div>
                             </div>
                         </div>
@@ -101,24 +100,24 @@
                         <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                             <div class="bg-white rounded-lg shadow-lg p-6 space-y-6">
                                 <div class="bg-white p-6 rounded-lg shadow-md">
-                                    <h3 class="text-xl font-bold text-[#0d0c22]">Concurrency: decoupled processing</h3>
-                                    <p class="mt-2 text-gray-600">Connectors publish normalized market data through shared helper services. Studies use their own processing queues and snapshots so calculations do not block incoming market-data callbacks.</p>
+                                    <h3 class="text-xl font-bold text-[#0d0c22]">Callback ownership</h3>
+                                    <p class="mt-2 text-gray-600">Order-book and trade helpers invoke subscribers synchronously. A subscriber must return quickly and must not retain the mutable <code>OrderBook</code> from the callback.</p>
                                 </div>
                                 <div class="bg-white p-6 rounded-lg shadow-md">
-                                    <h3 class="text-xl font-bold text-[#0d0c22]">Memory Management: Custom Object Pools</h3>
-                                    <p class="mt-2 text-gray-600">To minimize Garbage Collector (GC) pressure and prevent unpredictable latency spikes, the platform implements custom object pools. Frequently used objects like `Trade` and `OrderBookUpdate` are recycled instead of being newly allocated, dramatically reducing memory churn.</p>
+                                    <h3 class="text-xl font-bold text-[#0d0c22]">Snapshot when work outlives the callback</h3>
+                                    <p class="mt-2 text-gray-600">A consumer that needs an independent book state can create an <code>OrderBookSnapshot</code>. It rents storage for copied book items and must be disposed after use.</p>
                                 </div>
                             </div>
                             <div class="bg-white rounded-lg shadow-lg p-6">
                                 <h3 class="text-xl font-bold text-[#0d0c22]">Optimized LOB Data Structure</h3>
-                                <p class="mt-2 text-gray-600 mb-4">Order books are updated in place as market data arrives. Plugins that need to process data away from the incoming callback use an independent snapshot.</p>
+                                <p class="mt-2 text-gray-600 mb-4">Order books are updated in place as market data arrives. Queues and snapshots are opt-in consumer choices, not a universal study implementation.</p>
                                 <div class="bg-[#1e293b] text-[#e2e8f0] p-4 rounded-lg font-mono text-sm whitespace-pre-wrap leading-relaxed">
-                                    <p><span class="text-cyan-400">1. Incoming update:</span> an `OrderBook` is updated by its connector.</p>
+                                    <p><span class="text-cyan-400">1. Incoming update:</span> a connector updates a normalised <code>OrderBook</code>.</p>
                                     <p class="text-gray-400 ml-4">// connector code owns the venue-specific delta logic</p>
-                                    <p class="mt-2"><span class="text-cyan-400">2. Shared view:</span> helper services publish the updated book.</p>
-                                    <p class="text-gray-400 ml-4">// dashboard and studies subscribe to the same normalized data</p>
-                                    <p class="mt-2"><span class="text-cyan-400">3. Study work:</span> a study takes a disposable `OrderBookSnapshot`.</p>
-                                    <p class="text-gray-400 ml-4">// calculations run outside the data-feed callback</p>
+                                    <p class="mt-2"><span class="text-cyan-400">2. Shared view:</span> <code>HelperOrderBook</code> calls dashboard and study subscribers.</p>
+                                    <p class="text-gray-400 ml-4">// callback work must remain short</p>
+                                    <p class="mt-2"><span class="text-cyan-400">3. Longer work:</span> a consumer creates and later disposes an <code>OrderBookSnapshot</code>.</p>
+                                    <p class="text-gray-400 ml-4">// snapshot and queue use are per-consumer decisions</p>
                                 </div>
                             </div>
                         </div>
@@ -128,15 +127,15 @@
                     <div id="Plugins" class="page-content">
                         <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">The Plugin Ecosystem: A Framework for Extensibility</h2>
                         <div class="bg-white rounded-lg shadow-lg p-8">
-                            <p class="text-center text-gray-600 mb-8">The `PluginManager` orchestrates the ecosystem. At startup, it scans the directory containing `VisualHFT.exe`, uses reflection to find non-abstract types implementing `IPlugin`, and manages their lifecycle (`StartAsync`, `StopAsync`).</p>
+                            <p class="text-center text-gray-600 mb-8">At startup, <code>PluginManager</code> scans the directory containing <code>VisualHFT.exe</code>, finds non-abstract exported types implementing <code>IPlugin</code>, and starts the applicable connector, study, or multi-study lifecycle.</p>
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                                 <div class="border-dashed border-2 border-gray-400 p-6 rounded-lg text-center">
                                     <h3 class="text-xl font-bold text-gray-700">Data Retriever Plugin</h3>
-                                    <p class="mt-2 text-sm text-gray-600">Connects to a data source (e.g., FIX, WebSocket), parses the native format, and publishes standardized `Model` objects to the data bus.</p>
+                                    <p class="mt-2 text-sm text-gray-600">Connects to a venue, maps its native messages into normalised market models, and publishes those models through the matching shared helpers.</p>
                                 </div>
                                 <div class="border-dashed border-2 border-gray-400 p-6 rounded-lg text-center">
                                     <h3 class="text-xl font-bold text-gray-700">Study Plugin</h3>
-                                    <p class="mt-2 text-sm text-gray-600">Subscribes to data from the bus, performs calculations (e.g., VPIN, Imbalance) in a separate thread, and publishes results back to the bus.</p>
+                                    <p class="mt-2 text-sm text-gray-600">Subscribes to shared data, calculates its metric, and sends <code>BaseStudyModel</code> output through <code>AddCalculation(...)</code> and <code>OnCalculated</code>.</p>
                                 </div>
                             </div>
                         </div>
@@ -146,26 +145,26 @@
                     <div id="VPIN Study" class="page-content">
                         <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">Anatomy of a Study: VPIN Implementation</h2>
                         <div class="bg-white rounded-lg shadow-lg p-8 max-w-4xl mx-auto">
-                            <p class="text-center text-gray-600 mb-8">A `VPINStudy` plugin demonstrates the platform's analytical power. It's a stateful, event-driven component that processes raw trades into a sophisticated microstructure indicator.</p>
+                            <p class="text-center text-gray-600 mb-8">A <code>VPINStudy</code> plugin demonstrates the platform's analytical power. It is a stateful, event-driven component that processes raw trades into a microstructure indicator.</p>
                             <div class="space-y-2">
-                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">1</span><p>Subscribe to `OnTrade` event from `HelperTrade` data bus.</p></div>
+                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">1</span><p>Subscribe to configured trade and order-book updates from <code>HelperTrade</code> and <code>HelperOrderBook</code>.</p></div>
                                 <div class="ml-3.5 h-6 w-px bg-purple-300"></div>
-                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">2</span><p>Classify incoming trade as Buy/Sell (e.g., using Tick Rule).</p></div>
+                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">2</span><p>Classify a trade against the latest order-book midpoint, with the provider's buy or sell flag as fallback.</p></div>
                                 <div class="ml-3.5 h-6 w-px bg-purple-300"></div>
                                 <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">3</span><p>Add classified volume to the current Volume Bucket.</p></div>
                                 <div class="ml-3.5 h-6 w-px bg-purple-300"></div>
-                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">4</span><p>If bucket is full: calculate imbalance, add to rolling window (queue).</p></div>
+                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">4</span><p>When a bucket is full, calculate its imbalance and add it to the fixed-size rolling window.</p></div>
                                 <div class="ml-3.5 h-6 w-px bg-purple-300"></div>
                                 <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">5</span><p>Calculate new VPIN value from the rolling window.</p></div>
                                 <div class="ml-3.5 h-6 w-px bg-purple-300"></div>
-                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">6</span><p>Publish VPIN value to the data bus for UI consumption.</p></div>
+                                <div class="flex items-center"><span class="bg-purple-600 text-white rounded-full h-8 w-8 flex items-center justify-center font-bold mr-4 flex-shrink-0">6</span><p>Emit the new VPIN value with <code>AddCalculation(...)</code>, which raises <code>OnCalculated</code> for live views and triggers.</p></div>
                             </div>
                         </div>
                     </div>
 
                     <!-- Tech Stack Page -->
                     <div id="Tech Stack" class="page-content">
-                        <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">Technology Stack & Key Dependencies</h2>
+                        <h2 class="text-3xl font-bold text-center text-[#0d0c22] mb-10">Technology Stack and Runtime Boundaries</h2>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                             <div class="bg-white rounded-lg shadow-lg p-8">
                                 <h3 class="text-xl font-bold text-[#0d0c22] mb-4">Core Stack</h3>
@@ -178,11 +177,12 @@
                                 </ul>
                             </div>
                             <div class="bg-white rounded-lg shadow-lg p-8">
-                                <h3 class="text-xl font-bold text-[#0d0c22] mb-4">Dependency Licensing</h3>
-                                <p class="text-sm text-gray-600 mb-4">Key dependencies have licensing terms with significant implications for enterprise adoption.</p>
-                                <div class="h-64">
-                                    <canvas id="dependenciesChart"></canvas>
-                                </div>
+                                <h3 class="text-xl font-bold text-[#0d0c22] mb-4">Runtime boundaries</h3>
+                                <ul class="space-y-4 text-gray-600">
+                                    <li><span class="font-bold text-gray-800">Commons:</span> Shared models, helpers, and contracts with no WPF dependency.</li>
+                                    <li><span class="font-bold text-gray-800">Commons.WPF:</span> Reusable WPF support that depends on Commons.</li>
+                                    <li><span class="font-bold text-gray-800">Plugins:</span> Assemblies loaded into the desktop application's process from beside the executable.</li>
+                                </ul>
                             </div>
                         </div>
                     </div>
@@ -224,72 +224,6 @@
                 });
             });
 
-            // --- Chart.js Logic ---
-            const palette = {
-                blue: '#4f46e5',
-                pink: '#ec4899',
-                green: '#10b981',
-                yellow: '#f59e0b',
-                red: '#ef4444',
-                purple: '#8b5cf6',
-            };
-
-            const wrapLabel = (label) => {
-                const maxLength = 16;
-                if (label.length <= maxLength) return label;
-                const words = label.split(' ');
-                const lines = [];
-                let currentLine = '';
-                words.forEach(word => {
-                    if ((currentLine + word).length > maxLength) {
-                        lines.push(currentLine.trim());
-                        currentLine = '';
-                    }
-                    currentLine += word + ' ';
-                });
-                lines.push(currentLine.trim());
-                return lines.filter(line => line.length > 0);
-            };
-
-            const chartLabels = [
-                'Prism.Core (Dual License: Community/Commercial)',
-                'OxyPlot.Wpf (MIT)',
-                'Fody (MIT)',
-                'log4net (Apache 2.0)'
-            ].map(wrapLabel);
-
-            const chartData = [40, 25, 15, 20];
-            const ctx = document.getElementById('dependenciesChart').getContext('2d');
-
-            new Chart(ctx, {
-                type: 'doughnut',
-                data: {
-                    labels: chartLabels,
-                    datasets: [{
-                        label: 'Dependency License',
-                        data: chartData,
-                        backgroundColor: [palette.red, palette.blue, palette.purple, palette.yellow],
-                        borderColor: '#ffffff',
-                        borderWidth: 3
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {
-                        legend: { position: 'bottom', labels: { font: { size: 10 }, boxWidth: 15, padding: 15 } },
-                        tooltip: {
-                            callbacks: {
-                                title: (tooltipItems) => {
-                                    const item = tooltipItems[0];
-                                    let label = item.chart.data.labels[item.dataIndex];
-                                    return Array.isArray(label) ? label.join(' ') : label;
-                                }
-                            }
-                        }
-                    }
-                }
-            });
         });
     </script>
 </body>

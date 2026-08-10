@@ -1,28 +1,46 @@
-# VisualHFT
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/visualhft-wordmark-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="assets/brand/visualhft-wordmark-light.png">
+    <img alt="VisualHFT" src="assets/brand/visualhft-wordmark-light.png" width="260">
+  </picture>
+</p>
 
-An open-source desktop application for real-time market microstructure analysis.
+<p align="center">
+  An open-source desktop application for real-time market microstructure analysis.
+</p>
 
-[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-0D7C66?style=flat-square)](LICENSE.txt)
-[![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?style=flat-square)](https://dotnet.microsoft.com/download/dotnet/10.0)
-![Windows](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square)
-[![Discord](https://img.shields.io/badge/community-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://visualhft.com/discord)
-[![GitHub Discussions](https://img.shields.io/badge/community-GitHub%20Discussions-24292F?style=flat-square&logo=github)](https://github.com/visualHFT/VisualHFT/discussions)
+<p align="center">
+  <a href="https://visualhft.com">Website</a> ·
+  <a href="docs/README.md">Documentation</a> ·
+  <a href="https://visualhft.com/discord">Discord</a> ·
+  <a href="https://github.com/visualHFT/VisualHFT/discussions">Discussions</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE.txt"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/License-Apache--2.0-0D7C66?style=flat-square"></a>
+  <a href="https://dotnet.microsoft.com/download/dotnet/10.0"><img alt=".NET 10" src="https://img.shields.io/badge/.NET-10-512BD4?style=flat-square"></a>
+  <img alt="Platform: Windows" src="https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square">
+  <a href="https://visualhft.com/discord"><img alt="Community: Discord" src="https://img.shields.io/badge/community-Discord-5865F2?style=flat-square&logo=discord&logoColor=white"></a>
+</p>
 
 ![VisualHFT dashboard showing real-time Level 2 order book, liquidity, and market microstructure analytics](docImages/visualhft-hero-L2.gif)
 
-[Quickstart](#quickstart) · [Write a plugin](#write-a-plugin) · [Architecture](docs/architecture.md) · [Changelog](CHANGELOG.md) · [Contributing](CONTRIBUTING.md)
+<p align="center">
+  <a href="#quickstart">Quickstart</a> ·
+  <a href="docs/architecture.md">Architecture</a> ·
+  <a href="#extend-visualhft">Extend</a> ·
+  <a href="CHANGELOG.md">Changelog</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a>
+</p>
 
-## What it is
+## What it does
 
-VisualHFT shows live order books and trades from supported venues in one desktop application. It gives traders, quants, and researchers a direct view of depth, liquidity, order flow, and market resilience while the market is moving.
+VisualHFT brings live order books and trades from supported venues into one desktop view. It helps traders, quants, and researchers examine depth, liquidity, order flow, and market resilience while conditions are changing.
 
-## What you can see
-
-| Order book | Studies | Extensions |
-| --- | --- | --- |
-| Follow depth, trades, spreads, and venue conditions in one view. | Watch VPIN, LOB Imbalance, Market Resilience, and Order-to-Trade Ratio as conditions change. | Add a market connector or study for the data and measures you need. |
-
-![Full depth order-book view updating with live bid, ask, trade, and study data](docImages/LOB_fulldepth.gif)
+| Live order book | Built-in study |
+| --- | --- |
+| ![Full depth order-book view updating with live bid, ask, trade, and study data](docImages/LOB_fulldepth.gif) | ![LOB Imbalance study visualising changes in order-book pressure](docImages/LOB_imbalances_2.gif) |
 
 ## Quickstart
 
@@ -41,60 +59,34 @@ Open `VisualHFT/VisualHFT.sln` in Visual Studio and build the solution. Set `Vis
 
 Need help with setup? See [Troubleshooting](docs/troubleshooting.md) or ask in [Discord](https://visualhft.com/discord).
 
-## Supported venues and studies
+## Included in this repository
 
-| Type | Included examples |
+| Area | Included examples |
 | --- | --- |
 | Market data connectors | Binance, Bitfinex, Bitstamp, Coinbase, Gemini, Kraken, KuCoin, and a generic WebSocket connector |
 | Built-in studies | VPIN, LOB Imbalance, Market Resilience, and Order-to-Trade Ratio |
+| Extensibility | Templates for additional market connectors and market-microstructure studies |
 
-## What it does
+Connectors normalise live Level 2 order-book and trade updates for the dashboard and study plugins. Study outputs can also drive trigger conditions that send alerts to the user interface or configured REST endpoints.
 
-- Normalises live Level 2 order book and trade updates from supported connectors.
-- Displays depth, trades, spreads, liquidity changes, and study outputs in one desktop view.
-- Computes market microstructure metrics through included study plugins.
-- Runs trigger conditions and sends alerts to the UI or REST endpoints.
-- Supports additional connectors and studies without changes to the core application.
+## Extend VisualHFT
 
-## Screenshots
-
-<details>
-<summary>Open the current dashboard views</summary>
-
-| Depth | Limit order book |
-| --- | --- |
-| ![Depth view](docImages/Aspose.Words.5b849bdf-d96d-4013-ad76-8c3daba3aead.004.png) | ![Limit order book view](docImages/Aspose.Words.5b849bdf-d96d-4013-ad76-8c3daba3aead.007.png) |
-
-</details>
-
-## How it works
-
-Connectors publish normalised market data to VisualHFT. The dashboard and study plugins read that data and update the live view. See the [architecture overview](docs/architecture.md) for the component map and data flow.
-
-## Write a plugin
-
-VisualHFT has two extension templates:
+VisualHFT has templates and guides for two extension points:
 
 - [Market connector template](SDK-MarketConnectorTemplate/) for a new market-data source.
 - [Study template](SDK-StudyTemplate/) for a custom market-microstructure calculation.
 
-Use the matching template and guide. Plugin authors should also review `RequiredLicenseLevel` before distributing a plugin.
+Read the [architecture overview](docs/architecture.md) before extending the application. Use the matching template and guide before distributing a plugin.
 
-## Roadmap
+## Community and updates
 
-See the [project roadmap](https://visualhft.com/#roadmap) for planned work. This README describes only functionality included in the public repository today.
+Ask questions in [Discord](https://visualhft.com/discord) or [GitHub Discussions](https://github.com/visualHFT/VisualHFT/discussions). Report bugs and feature requests through [GitHub Issues](https://github.com/visualHFT/VisualHFT/issues).
 
-## Changelog
+Follow [VisualHFT Connect](https://visualhft.com/connect), [LinkedIn](https://www.linkedin.com/company/visualhft/), [X](https://x.com/visualHFT), and [Substack](https://visualhft.substack.com) for research and project updates. See [CONTRIBUTING.md](CONTRIBUTING.md) to contribute code or documentation.
 
-See [CHANGELOG.md](CHANGELOG.md) for changes by date.
+## Roadmap and changes
 
-## Community and contributing
-
-- **Questions and live discussion:** [VisualHFT Discord](https://visualhft.com/discord)
-- **Ideas and project discussion:** [GitHub Discussions](https://github.com/visualHFT/VisualHFT/discussions)
-- **Bugs and feature requests:** [GitHub Issues](https://github.com/visualHFT/VisualHFT/issues)
-- **Research and updates:** [VisualHFT Connect](https://visualhft.com/connect)
-- **Code and documentation contributions:** [CONTRIBUTING.md](CONTRIBUTING.md)
+See the [project roadmap](https://visualhft.com/#roadmap) for planned work and [CHANGELOG.md](CHANGELOG.md) for dated changes. This README describes functionality included in the public repository today.
 
 ## License
 
