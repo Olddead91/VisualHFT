@@ -5,6 +5,7 @@ An open-source desktop application for real-time market microstructure analysis.
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-0D7C66?style=flat-square)](LICENSE.txt)
 [![.NET 10](https://img.shields.io/badge/.NET-10-512BD4?style=flat-square)](https://dotnet.microsoft.com/download/dotnet/10.0)
 ![Windows](https://img.shields.io/badge/platform-Windows-0078D4?style=flat-square)
+[![Discord](https://img.shields.io/badge/community-Discord-5865F2?style=flat-square&logo=discord&logoColor=white)](https://visualhft.com/discord)
 [![GitHub Discussions](https://img.shields.io/badge/community-GitHub%20Discussions-24292F?style=flat-square&logo=github)](https://github.com/visualHFT/VisualHFT/discussions)
 
 ![VisualHFT dashboard showing real-time Level 2 order book, liquidity, and market microstructure analytics](docImages/visualhft-hero-L2.gif)
