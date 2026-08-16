@@ -73,7 +73,7 @@ TextOptions.TextRenderingMode="Auto"
 <Run>Next, choose a condition operator such as "greater than", "less than", or "equal to". This operator defines how the plugin's value will be compared.</Run>
 <LineBreak />
 <LineBreak />
-<Run>You can add multiple conditions for the same plugin if needed.</Run>
+<Run>You can add multiple conditions. Every condition on the rule must be true at the same time (AND) before the actions fire.</Run>
 <LineBreak />
 <LineBreak />
 <Run>Then, enter a value to compare the plugin's data against. This value acts as the threshold for your condition.</Run>

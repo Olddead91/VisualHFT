@@ -45,6 +45,10 @@ namespace VisualHFT.TriggerEngine
         private static readonly ConcurrentDictionary<string, (double Value, DateTime Timestamp)> LastMetricValues = new();
         private static readonly ConcurrentDictionary<string, DateTime> ConditionStartTimes = new();
         private static readonly ConcurrentDictionary<string, DateTime> ActionLastFiredTimes = new();
+        // Per rule+condition: last evaluation of THAT condition's own series.
+        // Multiple conditions on one rule are AND — a missing/false entry means
+        // the conjunction is not met. Updated only when that condition's plugin ticks.
+        private static readonly ConcurrentDictionary<string, bool> ConditionCurrentlyMet = new();
 
         private static readonly Channel<MetricEvent> MetricChannel = Channel.CreateUnbounded<MetricEvent>();
 
@@ -187,12 +191,31 @@ namespace VisualHFT.TriggerEngine
             foreach (var rule in ruleSnapshot)
             {
                 if (!rule.IsEnabled) continue;
+                if (rule.Condition == null || rule.Condition.Count == 0) continue;
 
+                bool tickMatchesRule = false;
+                for (int i = 0; i < rule.Condition.Count; i++)
+                {
+                    if (rule.Condition[i].Plugin == e.Plugin)
+                    {
+                        tickMatchesRule = true;
+                        break;
+                    }
+                }
+                if (!tickMatchesRule)
+                    continue;
+
+                // Update satisfaction only for conditions that this tick belongs to.
+                // Sibling conditions keep the last result from their own series.
+                TriggerCondition? triggeringCondition = null;
                 for (int i = 0; i < rule.Condition.Count; i++)
                 {
                     var condition = rule.Condition[i];
                     if (condition.Plugin != e.Plugin)
                         continue;
+
+                    if (triggeringCondition == null)
+                        triggeringCondition = condition;
 
                     // OD-3 / GAP-MDR-14: a rule with a sustained Window must only
                     // count as met once the condition has HELD for the full window.
@@ -212,61 +235,85 @@ namespace VisualHFT.TriggerEngine
                     {
                         isConditionMet = EvaluateDirect(condition, e.Value, previous);
                     }
-                    if (!isConditionMet)
-                        continue; // Skip if condition is not satisfied
 
-                    for (int j = 0; j < rule.Actions.Count; j++)
+                    ConditionCurrentlyMet[ConditionStateKey(rule.RuleID, condition.ConditionID)] = isConditionMet;
+                }
+
+                // AND: every condition on the rule must currently be true.
+                // Never-seen (no last tick) is false.
+                bool allMet = true;
+                for (int i = 0; i < rule.Condition.Count; i++)
+                {
+                    var condition = rule.Condition[i];
+                    if (!ConditionCurrentlyMet.TryGetValue(
+                            ConditionStateKey(rule.RuleID, condition.ConditionID), out var met)
+                        || !met)
                     {
-                        var action = rule.Actions[j];
-                        string actionKey = $"{rule.Name}|{j}";
+                        allMet = false;
+                        break;
+                    }
+                }
+                if (!allMet)
+                    continue;
 
-                        var cooldown = GetCooldownSpan(action.CooldownDuration, action.CooldownUnit);
+                triggeringCondition ??= rule.Condition[0];
 
-                        if (!ActionLastFiredTimes.TryGetValue(actionKey, out var lastFireTime))
+                for (int j = 0; j < rule.Actions.Count; j++)
+                {
+                    var action = rule.Actions[j];
+                    string actionKey = $"{rule.Name}|{j}";
+
+                    var cooldown = GetCooldownSpan(action.CooldownDuration, action.CooldownUnit);
+
+                    if (!ActionLastFiredTimes.TryGetValue(actionKey, out var lastFireTime))
+                    {
+                        // GAP-MDR-01: the FIRST qualifying fire from a clean
+                        // state must fire — the spec (FR-3.3.1 / S-08) treats
+                        // the first breach like any other. Previously this branch
+                        // only recorded the timestamp (ExecuteActionAsync and the
+                        // OnTriggerFired raise were commented out), so the first
+                        // breach was silently dropped and a fire only happened on
+                        // the second qualifying tick after cooldown.
+                        ActionLastFiredTimes[actionKey] = e.Timestamp;
+                        _ = ExecuteActionAsync(rule.Name, triggeringCondition, action, e.Plugin, e.Metric, e.Exchange, e.Symbol, e.Value, e.Timestamp);
+                        RaiseOnTriggerFired(rule, triggeringCondition, e);
+                    }
+                    else
+                    {
+                        // A replay is a RE-presentation of an observation this action
+                        // already fired on — not new market data. Letting it through
+                        // means every rule-config edit re-fires every rule currently
+                        // in breach whose cooldown has elapsed, raising phantom alerts
+                        // off stale values. Replays may only fire an action that has
+                        // NEVER fired (the first-fire branch above), which is exactly
+                        // the "evaluate a newly added rule against standing state"
+                        // behaviour the replay exists for. Live ticks are unaffected.
+                        if (e.IsReplay)
+                            continue;
+
+                        if ((e.Timestamp - lastFireTime) >= cooldown)
                         {
-                            // GAP-MDR-01: the FIRST qualifying fire from a clean
-                            // state must fire — the spec (FR-3.3.1 / S-08) treats
-                            // the first breach like any other. Previously this branch
-                            // only recorded the timestamp (ExecuteActionAsync and the
-                            // OnTriggerFired raise were commented out), so the first
-                            // breach was silently dropped and a fire only happened on
-                            // the second qualifying tick after cooldown.
+                            // Cooldown passed, fire again
                             ActionLastFiredTimes[actionKey] = e.Timestamp;
-                            _ = ExecuteActionAsync(rule.Name, condition, action, e.Plugin, e.Metric, e.Exchange, e.Symbol, e.Value, e.Timestamp);
-                            RaiseOnTriggerFired(rule, condition, e);
-                        }
-                        else
-                        {
-                            // A replay is a RE-presentation of an observation this action
-                            // already fired on — not new market data. Letting it through
-                            // means every rule-config edit re-fires every rule currently
-                            // in breach whose cooldown has elapsed, raising phantom alerts
-                            // off stale values. Replays may only fire an action that has
-                            // NEVER fired (the first-fire branch above), which is exactly
-                            // the "evaluate a newly added rule against standing state"
-                            // behaviour the replay exists for. Live ticks are unaffected.
-                            if (e.IsReplay)
-                                continue;
+                            _ = ExecuteActionAsync(rule.Name, triggeringCondition, action, e.Plugin, e.Metric, e.Exchange, e.Symbol, e.Value, e.Timestamp);
 
-                            if ((e.Timestamp - lastFireTime) >= cooldown)
-                            {
-                                // Cooldown passed, fire again
-                                ActionLastFiredTimes[actionKey] = e.Timestamp;
-                                _ = ExecuteActionAsync(rule.Name, condition, action, e.Plugin, e.Metric, e.Exchange, e.Symbol, e.Value, e.Timestamp);
-
-                                // Architecture §2.2.5 — raise OnTriggerFired
-                                // AFTER the cooldown passes (matches the fire
-                                // semantics of ExecuteActionAsync). Per-handler
-                                // try/catch keeps a misbehaving subscriber from
-                                // poisoning the rest of the invocation list
-                                // (T-MDR-045 case 7).
-                                RaiseOnTriggerFired(rule, condition, e);
-                            }
-                            // else: cooldown not passed, do nothing
+                            // Architecture §2.2.5 — raise OnTriggerFired
+                            // AFTER the cooldown passes (matches the fire
+                            // semantics of ExecuteActionAsync). Per-handler
+                            // try/catch keeps a misbehaving subscriber from
+                            // poisoning the rest of the invocation list
+                            // (T-MDR-045 case 7).
+                            RaiseOnTriggerFired(rule, triggeringCondition, e);
                         }
+                        // else: cooldown not passed, do nothing
                     }
                 }
             }
+        }
+
+        private static string ConditionStateKey(long ruleId, long conditionId)
+        {
+            return $"{ruleId}|{conditionId}";
         }
 
         // Per-subscriber fan-out for OnTriggerFired. Iterating GetInvocationList
@@ -378,8 +425,8 @@ namespace VisualHFT.TriggerEngine
 
             if (action.Type == ActionType.UIAlert)
             {
-                string formattedMessage = $"{metric} - {exchange} - {symbol}: \"{condition.Operator.ToString()} {condition.Threshold} \" has been triggered ";
-                HelperNotificationManager.Instance.AddNotification("Alert", formattedMessage, HelprNorificationManagerTypes.TRIGGER_ACTION,
+                string formattedMessage = $"{exchange} - {symbol}";
+                HelperNotificationManager.Instance.AddNotification(ruleName, formattedMessage, HelprNorificationManagerTypes.TRIGGER_ACTION,
                     HelprNorificationManagerCategories.TRIGGER_ENGINE, null, condition.Plugin);
             }
             return Task.CompletedTask;
