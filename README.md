@@ -12,7 +12,8 @@
 
 <p align="center">
   <a href="https://visualhft.com">Website</a> ·
-  <a href="docs/README.md">Documentation</a> ·
+  <a href="https://visualhft.com/docs">Documentation</a> ·
+  <a href="docs/README.md">OSS doc sources</a> ·
   <a href="https://visualhft.com/discord">Discord</a> ·
   <a href="https://github.com/visualHFT/VisualHFT/discussions">Discussions</a>
 </p>
@@ -57,7 +58,7 @@ git clone https://github.com/visualHFT/VisualHFT.git
 
 Open `VisualHFT/VisualHFT.sln` in Visual Studio and build the solution. Set `VisualHFT` as the startup project and press <kbd>F5</kbd>. The Dashboard opens first. Select an available provider and a normalised symbol such as `BTC/USD` in the order-book panel.
 
-Need help with setup? See [Troubleshooting](docs/troubleshooting.md) or ask in [Discord](https://visualhft.com/discord).
+Need help with setup? Use the public [VisualHFT documentation](https://visualhft.com/docs), see the repository [troubleshooting source](docs/troubleshooting.md), or ask in [Discord](https://visualhft.com/discord).
 
 ## Included in this repository
 
