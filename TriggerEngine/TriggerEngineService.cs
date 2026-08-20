@@ -48,6 +48,10 @@ namespace VisualHFT.TriggerEngine
         // Per rule+condition: last evaluation of THAT condition's own series.
         // Multiple conditions on one rule are AND — a missing/false entry means
         // the conjunction is not met. Updated only when that condition's plugin ticks.
+        // Keyed by the condition's POSITION on the rule, never by ConditionID:
+        // the rule dialog stamps every condition of a new rule in the same
+        // UtcNow millisecond, so saved configs carry duplicate ConditionIDs and
+        // an ID-based key collapses distinct conditions into one shared slot.
         private static readonly ConcurrentDictionary<string, bool> ConditionCurrentlyMet = new();
 
         private static readonly Channel<MetricEvent> MetricChannel = Channel.CreateUnbounded<MetricEvent>();
@@ -97,6 +101,7 @@ namespace VisualHFT.TriggerEngine
                 File.WriteAllText(TriggerEngineConfigFilePath, json);
 
             }
+            ClearConditionStateForRule(rule.RuleID);
             LoadAllRules();
             Task.Run(() => EvaluateAllRulesAgainstLatestMetrics());
         }
@@ -114,8 +119,28 @@ namespace VisualHFT.TriggerEngine
 
                 }
             }
+            ClearConditionStateForRule(RuleID);
             LoadAllRules();
             Task.Run(() => EvaluateAllRulesAgainstLatestMetrics());
+        }
+
+        // Condition state is keyed by position on the rule, so an edit that
+        // reorders/replaces conditions would otherwise let a stale slot stand
+        // in for a condition that has never been evaluated. The config-change
+        // replay re-establishes fresh state from LastMetricValues.
+        private static void ClearConditionStateForRule(long ruleId)
+        {
+            string prefix = $"{ruleId}|";
+            foreach (var key in ConditionCurrentlyMet.Keys)
+            {
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                    ConditionCurrentlyMet.TryRemove(key, out _);
+            }
+            foreach (var key in ConditionStartTimes.Keys)
+            {
+                if (key.StartsWith(prefix, StringComparison.Ordinal))
+                    ConditionStartTimes.TryRemove(key, out _);
+            }
         }
         public static void ClearAllRules()
         {
@@ -196,7 +221,7 @@ namespace VisualHFT.TriggerEngine
                 bool tickMatchesRule = false;
                 for (int i = 0; i < rule.Condition.Count; i++)
                 {
-                    if (rule.Condition[i].Plugin == e.Plugin)
+                    if (ConditionMatchesTick(rule.Condition[i], e))
                     {
                         tickMatchesRule = true;
                         break;
@@ -211,7 +236,7 @@ namespace VisualHFT.TriggerEngine
                 for (int i = 0; i < rule.Condition.Count; i++)
                 {
                     var condition = rule.Condition[i];
-                    if (condition.Plugin != e.Plugin)
+                    if (!ConditionMatchesTick(condition, e))
                         continue;
 
                     if (triggeringCondition == null)
@@ -227,7 +252,7 @@ namespace VisualHFT.TriggerEngine
                     bool isConditionMet;
                     if (condition.Window != null && condition.Window.Duration > 0)
                     {
-                        string conditionKey = $"{rule.RuleID}|{condition.ConditionID}|{metricKey}";
+                        string conditionKey = $"{rule.RuleID}|{i}|{metricKey}";
                         isConditionMet = IsConditionSatisfiedWithWindow(
                             condition, e.Value, previous, e.Timestamp, conditionKey);
                     }
@@ -236,7 +261,7 @@ namespace VisualHFT.TriggerEngine
                         isConditionMet = EvaluateDirect(condition, e.Value, previous);
                     }
 
-                    ConditionCurrentlyMet[ConditionStateKey(rule.RuleID, condition.ConditionID)] = isConditionMet;
+                    ConditionCurrentlyMet[ConditionStateKey(rule.RuleID, i)] = isConditionMet;
                 }
 
                 // AND: every condition on the rule must currently be true.
@@ -244,9 +269,8 @@ namespace VisualHFT.TriggerEngine
                 bool allMet = true;
                 for (int i = 0; i < rule.Condition.Count; i++)
                 {
-                    var condition = rule.Condition[i];
                     if (!ConditionCurrentlyMet.TryGetValue(
-                            ConditionStateKey(rule.RuleID, condition.ConditionID), out var met)
+                            ConditionStateKey(rule.RuleID, i), out var met)
                         || !met)
                     {
                         allMet = false;
@@ -311,9 +335,20 @@ namespace VisualHFT.TriggerEngine
             }
         }
 
-        private static string ConditionStateKey(long ruleId, long conditionId)
+        private static string ConditionStateKey(long ruleId, int conditionIndex)
         {
-            return $"{ruleId}|{conditionId}";
+            return $"{ruleId}|{conditionIndex}";
+        }
+
+        // A condition binds to its plugin AND its metric. A null/empty Metric is
+        // a legacy wildcard: configs saved before the rule dialog captured a
+        // metric name carry Metric = null and keep matching any metric the
+        // plugin emits (today each plugin instance emits one metric series).
+        private static bool ConditionMatchesTick(TriggerCondition condition, MetricEvent e)
+        {
+            if (condition.Plugin != e.Plugin)
+                return false;
+            return string.IsNullOrEmpty(condition.Metric) || condition.Metric == e.Metric;
         }
 
         // Per-subscriber fan-out for OnTriggerFired. Iterating GetInvocationList
