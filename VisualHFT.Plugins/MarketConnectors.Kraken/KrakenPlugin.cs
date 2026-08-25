@@ -58,7 +58,7 @@ namespace MarketConnectors.Kraken
         private ChecksumValidationMode _checksumMode = ChecksumValidationMode.Enforce;
         // PERF-5: value-tuple payloads avoid a per-frame heap Tuple allocation. The isSnapshot flag routes
         // snapshots through the SAME single-consumer queue as deltas (ACC-4/CONC-4: ordered, race-free book build).
-        private Dictionary<string, HelperCustomQueue<(DateTime ts, string symbol, KrakenBookUpdate data, bool isSnapshot)>> _eventBuffers = new();
+        private Dictionary<string, HelperCustomQueue<(DateTime? ts, string symbol, KrakenBookUpdate data, bool isSnapshot)>> _eventBuffers = new();
         private Dictionary<string, HelperCustomQueue<(string symbol, KrakenTradeUpdate trade)>> _tradesBuffers = new();
         private readonly object _buffersLock = new object(); // ✅ ADD: Thread-safe buffer access
 
@@ -141,7 +141,7 @@ namespace MarketConnectors.Kraken
                 // Initialize event buffer for each symbol
                 foreach (var symbol in GetAllNormalizedSymbols())
                 {
-                    _eventBuffers.Add(symbol, new HelperCustomQueue<(DateTime ts, string symbol, KrakenBookUpdate data, bool isSnapshot)>($"<BookEvent>_{this.Name.Replace(" Plugin", "")}", eventBuffers_onReadAction, eventBuffers_onErrorAction));
+                    _eventBuffers.Add(symbol, new HelperCustomQueue<(DateTime? ts, string symbol, KrakenBookUpdate data, bool isSnapshot)>($"<BookEvent>_{this.Name.Replace(" Plugin", "")}", eventBuffers_onReadAction, eventBuffers_onErrorAction));
                     _tradesBuffers.Add(symbol, new HelperCustomQueue<(string symbol, KrakenTradeUpdate trade)>($"<TradeEvent>_{this.Name.Replace(" Plugin", "")}", tradesBuffers_onReadAction, tradesBuffers_onErrorAction));
                 }
 
@@ -435,14 +435,18 @@ namespace MarketConnectors.Kraken
                                 if (!isSnapshot)
                                     CheckFrameFreshnessAndWarn(receiveLocal);
 
-                                HelperCustomQueue<(DateTime ts, string symbol, KrakenBookUpdate data, bool isSnapshot)> buffer;
+                                // The BOOK stamp is the venue's own frame timestamp (null when
+                                // absent) — receiveLocal stays the freshness-guard input only.
+                                var exchangeTs = ResolveBookTimestamp(data.Data);
+
+                                HelperCustomQueue<(DateTime? ts, string symbol, KrakenBookUpdate data, bool isSnapshot)> buffer;
                                 lock (_buffersLock)
                                 {
                                     if (!_eventBuffers.TryGetValue(normalizedSymbol, out buffer))
                                         return; // Buffer was cleared during reconnection
                                 }
 
-                                buffer.Add((receiveLocal, normalizedSymbol, data.Data, isSnapshot));
+                                buffer.Add((exchangeTs, normalizedSymbol, data.Data, isSnapshot));
                             }
                             catch (Exception ex)
                             {
@@ -511,7 +515,7 @@ namespace MarketConnectors.Kraken
             _timerPing.Enabled = true; // Start the timer
         }
 
-        private void eventBuffers_onReadAction((DateTime ts, string symbol, KrakenBookUpdate data, bool isSnapshot) e)
+        private void eventBuffers_onReadAction((DateTime? ts, string symbol, KrakenBookUpdate data, bool isSnapshot) e)
         {
             if (e.isSnapshot)
                 ApplySnapshot(e.data, e.symbol, e.ts);
@@ -754,7 +758,7 @@ namespace MarketConnectors.Kraken
         }
         // Live snapshot handler. Runs on the single book-consumer thread, strictly in order with deltas
         // (ACC-4/CONC-4), so the display book and the decimal ladder are always built before any delta.
-        private void ApplySnapshot(KrakenBookUpdate data, string symbol, DateTime ts)
+        private void ApplySnapshot(KrakenBookUpdate data, string symbol, DateTime? ts)
         {
             var lob = ToOrderBookModel(data, symbol);
             lob.LastUpdated = ts;
@@ -771,7 +775,21 @@ namespace MarketConnectors.Kraken
             RaiseOnDataReceived(lob);
         }
 
-        private void UpdateOrderBook(KrakenBookUpdate lob_update, string symbol, DateTime ts)
+        /// <summary>
+        /// The single decision point for the venue's book timestamp. Kraken book-v2
+        /// carries a frame-level exchange timestamp (wire field "timestamp"); return it
+        /// in local kind. A frame without it returns null — a default(DateTime) stamp
+        /// would fabricate a colossal latency spike, and receive time must never
+        /// masquerade as exchange time (same principle as the ACC-3 trades rule).
+        /// </summary>
+        public static DateTime? ResolveBookTimestamp(KrakenBookUpdate lob_update)
+        {
+            if (lob_update == null || lob_update.Timestamp == default)
+                return null;
+            return lob_update.Timestamp.ToLocalTime();
+        }
+
+        private void UpdateOrderBook(KrakenBookUpdate lob_update, string symbol, DateTime? ts)
         {
             if (!_localOrderBooks.TryGetValue(symbol, out VisualHFT.Model.OrderBook? local_lob) || local_lob == null)
                 return;
@@ -794,7 +812,7 @@ namespace MarketConnectors.Kraken
                         continue;
                     // PERF-1: allocation-free primitive overloads (no per-level DeltaBookItem), mirroring KuCoin.
                     if (item.Quantity != 0)
-                        local_lob.AddOrUpdateLevel(true, string.Empty, (double)item.Price, (double)item.Quantity, now, ts);
+                        local_lob.AddOrUpdateLevel(true, string.Empty, (double)item.Price, (double)item.Quantity, now, ts ?? now);
                     else
                         local_lob.DeleteLevel(true, string.Empty, (double)item.Price, (double)item.Quantity);
                     if (validate)
@@ -805,7 +823,7 @@ namespace MarketConnectors.Kraken
                     if (item.Quantity == 0 && item.Price == 0 || item.Quantity < 0)
                         continue;
                     if (item.Quantity != 0)
-                        local_lob.AddOrUpdateLevel(false, string.Empty, (double)item.Price, (double)item.Quantity, now, ts);
+                        local_lob.AddOrUpdateLevel(false, string.Empty, (double)item.Price, (double)item.Quantity, now, ts ?? now);
                     else
                         local_lob.DeleteLevel(false, string.Empty, (double)item.Price, (double)item.Quantity);
                     if (validate)

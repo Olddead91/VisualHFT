@@ -35,8 +35,8 @@ namespace MarketConnectors.Coinbase
         private readonly ConcurrentDictionary<string, VisualHFT.Model.OrderBook> _localOrderBooks =
             new ConcurrentDictionary<string, VisualHFT.Model.OrderBook>();
 
-        private readonly ConcurrentDictionary<string, HelperCustomQueue<Tuple<DateTime, string, CoinbaseOrderBookUpdate>>> _eventBuffers =
-            new ConcurrentDictionary<string, HelperCustomQueue<Tuple<DateTime, string, CoinbaseOrderBookUpdate>>>();
+        private readonly ConcurrentDictionary<string, HelperCustomQueue<Tuple<DateTime?, string, CoinbaseOrderBookUpdate>>> _eventBuffers =
+            new ConcurrentDictionary<string, HelperCustomQueue<Tuple<DateTime?, string, CoinbaseOrderBookUpdate>>>();
 
         private readonly ConcurrentDictionary<string, HelperCustomQueue<Tuple<string, CoinbaseTrade>>> _tradesBuffers =
             new ConcurrentDictionary<string, HelperCustomQueue<Tuple<string, CoinbaseTrade>>>();
@@ -139,7 +139,7 @@ namespace MarketConnectors.Coinbase
                 foreach (var symbol in GetAllNormalizedSymbols())
                 {
                     _eventBuffers.TryAdd(symbol,
-                        new HelperCustomQueue<Tuple<DateTime, string, CoinbaseOrderBookUpdate>>(
+                        new HelperCustomQueue<Tuple<DateTime?, string, CoinbaseOrderBookUpdate>>(
                             $"<Tuple<DateTime, string, CoinbaseStreamOrderBookChanged>>_{this.Name.Replace(" Plugin", "")}",
                             eventBuffers_onReadAction, eventBuffers_onErrorAction));
                     _tradesBuffers.TryAdd(symbol,
@@ -335,9 +335,12 @@ namespace MarketConnectors.Coinbase
                                             HelprNorificationManagerCategories.PLUGINS);
                                     }
 
+                                    // The BOOK stamp is the venue's own event time (newest entry
+                                    // "event_time", null when absent) — ReceiveTime stays the
+                                    // freshness-warn input only, never the book stamp.
                                     _eventBuffers[normalizedSymbol].Add(
-                                        new Tuple<DateTime, string, CoinbaseOrderBookUpdate>(
-                                            data.ReceiveTime.ToLocalTime(), normalizedSymbol, data.Data));
+                                        new Tuple<DateTime?, string, CoinbaseOrderBookUpdate>(
+                                            ResolveBookTimestamp(data.Data), normalizedSymbol, data.Data));
                                 }
                             }
                             catch (Exception ex)
@@ -417,7 +420,7 @@ namespace MarketConnectors.Coinbase
             _timerPing.Enabled = true; // Start the timer
         }
 
-        private void eventBuffers_onReadAction(Tuple<DateTime, string, CoinbaseOrderBookUpdate> eventData)
+        private void eventBuffers_onReadAction(Tuple<DateTime?, string, CoinbaseOrderBookUpdate> eventData)
         {
             UpdateOrderBook(eventData.Item3, eventData.Item2, eventData.Item1);
         }
@@ -530,7 +533,37 @@ namespace MarketConnectors.Coinbase
         #endregion
 
         // ✅ FIX: Thread-safe UpdateOrderBook
-        private void UpdateOrderBook(CoinbaseOrderBookUpdate lob_update, string symbol, DateTime ts)
+        /// <summary>
+        /// The single decision point for the venue's book timestamp. Coinbase's level2
+        /// stream carries the exchange event time PER ENTRY (wire field "event_time");
+        /// the frame timestamp is the newest entry event time across bids and asks,
+        /// returned in local kind. Entries without it are ignored; a frame with no
+        /// usable entry timestamps returns null — receive time must never masquerade
+        /// as exchange time.
+        /// </summary>
+        public static DateTime? ResolveBookTimestamp(CoinbaseOrderBookUpdate lob_update)
+        {
+            if (lob_update == null)
+                return null;
+            var newest = default(DateTime);
+            if (lob_update.Bids != null)
+            {
+                foreach (var item in lob_update.Bids)
+                {
+                    if (item.EventTime > newest) newest = item.EventTime;
+                }
+            }
+            if (lob_update.Asks != null)
+            {
+                foreach (var item in lob_update.Asks)
+                {
+                    if (item.EventTime > newest) newest = item.EventTime;
+                }
+            }
+            return newest == default ? null : newest.ToLocalTime();
+        }
+
+        private void UpdateOrderBook(CoinbaseOrderBookUpdate lob_update, string symbol, DateTime? ts)
         {
             if (lob_update == null)
                 return;
@@ -559,7 +592,7 @@ namespace MarketConnectors.Coinbase
                         Size = (double)item.Quantity,
                         IsBid = true,
                         LocalTimeStamp = now,
-                        ServerTimeStamp = ts,
+                        ServerTimeStamp = ts ?? DateTime.Now,
                         Symbol = symbol
                     });
                 }
@@ -571,7 +604,7 @@ namespace MarketConnectors.Coinbase
                         Price = (double)item.Price,
                         IsBid = true,
                         LocalTimeStamp = now,
-                        ServerTimeStamp = ts,
+                        ServerTimeStamp = ts ?? DateTime.Now,
                         Symbol = symbol
                     });
                 }
@@ -588,7 +621,7 @@ namespace MarketConnectors.Coinbase
                         Size = (double)item.Quantity,
                         IsBid = false,
                         LocalTimeStamp = now,
-                        ServerTimeStamp = ts,
+                        ServerTimeStamp = ts ?? DateTime.Now,
                         Symbol = symbol
                     });
                 }
@@ -600,7 +633,7 @@ namespace MarketConnectors.Coinbase
                         Price = (double)item.Price,
                         IsBid = false,
                         LocalTimeStamp = now,
-                        ServerTimeStamp = ts,
+                        ServerTimeStamp = ts ?? DateTime.Now,
                         Symbol = symbol
                     });
                 }

@@ -39,7 +39,7 @@ namespace MarketConnectors.Bitfinex
         private BitfinexSocketClient _socketClient;
         private BitfinexRestClient _restClient;
         private Dictionary<string, VisualHFT.Model.OrderBook> _localOrderBooks = new Dictionary<string, VisualHFT.Model.OrderBook>();
-        private Dictionary<string, HelperCustomQueue<Tuple<DateTime, string, BitfinexOrderBookEntry>>> _eventBuffers = new();
+        private Dictionary<string, HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>>> _eventBuffers = new();
         private Dictionary<string, HelperCustomQueue<Tuple<string, BitfinexTradeSimple>>> _tradesBuffers = new();
         private readonly object _buffersLock = new object(); // ✅ ADD: Thread-safe buffer access
 
@@ -115,7 +115,7 @@ namespace MarketConnectors.Bitfinex
                 // Initialize event buffer for each symbol
                 foreach (var symbol in GetAllNormalizedSymbols())
                 {
-                    _eventBuffers.Add(symbol, new HelperCustomQueue<Tuple<DateTime, string, BitfinexOrderBookEntry>>($"<Tuple<DateTime, string, BitfinexOrderBookEntry>>_{this.Name.Replace(" Plugin", "")}", eventBuffers_onReadAction, eventBuffers_onErrorAction));
+                    _eventBuffers.Add(symbol, new HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>>($"<Tuple<DateTime?, string, BitfinexOrderBookEntry>>_{this.Name.Replace(" Plugin", "")}", eventBuffers_onReadAction, eventBuffers_onErrorAction));
                     _tradesBuffers.Add(symbol, new HelperCustomQueue<Tuple<string, BitfinexTradeSimple>>($"<Tuple<DateTime, string, BitfinexTradeSimple>>_{this.Name.Replace(" Plugin", "")}", tradesBuffers_onReadAction, tradesBuffers_onErrorAction));
                 }
 
@@ -356,18 +356,21 @@ namespace MarketConnectors.Bitfinex
                                 else
                                 {
                                     // ✅ FIX: Thread-safe buffer access
-                                    HelperCustomQueue<Tuple<DateTime, string, BitfinexOrderBookEntry>> buffer;
+                                    HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>> buffer;
                                     lock (_buffersLock)
                                     {
                                         if (!_eventBuffers.TryGetValue(normalizedSymbol, out buffer))
                                             return; // Buffer was cleared during reconnection
                                     }
                                     
+                                    // The BOOK stamp is the venue's server timestamp carried on the
+                                    // wrapper (DataTime, null when absent) — never local receive time.
+                                    var exchangeTs = ResolveBookTimestamp(data.DataTime);
                                     foreach (var item in data.Data)
                                     {
                                         buffer.Add(
-                                            new Tuple<DateTime, string, BitfinexOrderBookEntry>(
-                                                data.ReceiveTime.ToLocalTime(), normalizedSymbol, item));
+                                            new Tuple<DateTime?, string, BitfinexOrderBookEntry>(
+                                                exchangeTs, normalizedSymbol, item));
                                     }
                                 }
                             }
@@ -436,7 +439,7 @@ namespace MarketConnectors.Bitfinex
             _timerPing.Enabled = true; // Start the timer
         }
 
-        private void eventBuffers_onReadAction(Tuple<DateTime, string, BitfinexOrderBookEntry> eventData)
+        private void eventBuffers_onReadAction(Tuple<DateTime?, string, BitfinexOrderBookEntry> eventData)
         {
             UpdateOrderBook(eventData.Item3, eventData.Item2, eventData.Item1);
         }
@@ -659,7 +662,21 @@ namespace MarketConnectors.Bitfinex
                 });
             });
         }
-        private void UpdateOrderBook(BitfinexOrderBookEntry lob_update, string symbol, DateTime ts)
+        /// <summary>
+        /// The single decision point for the venue's book timestamp. Bitfinex book
+        /// entries carry no timestamp, but the socket library enables the exchange's
+        /// TIMESTAMP conf flag and delivers the server's event time on
+        /// DataEvent.DataTime for every book frame; return it in local kind. A frame
+        /// without it returns null — receive time must never masquerade as exchange time.
+        /// </summary>
+        public static DateTime? ResolveBookTimestamp(DateTime? dataTime)
+        {
+            if (!dataTime.HasValue || dataTime.Value == default)
+                return null;
+            return dataTime.Value.ToLocalTime();
+        }
+
+        private void UpdateOrderBook(BitfinexOrderBookEntry lob_update, string symbol, DateTime? ts)
         {
             if (!_localOrderBooks.ContainsKey(symbol))
                 return;
@@ -680,7 +697,7 @@ namespace MarketConnectors.Bitfinex
                         Size = (double)Math.Abs(lob_update.Quantity),
                         IsBid = isBid,
                         LocalTimeStamp = DateTime.Now,
-                        ServerTimeStamp = ts,
+                        ServerTimeStamp = ts ?? DateTime.Now,
                         Symbol = local_lob.Symbol,
                         MDUpdateAction = eMDUpdateAction.Delete,
                     };
@@ -694,7 +711,7 @@ namespace MarketConnectors.Bitfinex
                         Size = (double)Math.Abs(lob_update.Quantity),
                         IsBid = isBid,
                         LocalTimeStamp = DateTime.Now,
-                        ServerTimeStamp = ts,
+                        ServerTimeStamp = ts ?? DateTime.Now,
                         Symbol = local_lob.Symbol,
                         MDUpdateAction = eMDUpdateAction.Change,
                     };

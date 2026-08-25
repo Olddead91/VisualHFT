@@ -266,10 +266,18 @@ TextOptions.TextRenderingMode="Auto"
   <LineBreak />
   <Run>   • </Run>
   <Run FontWeight="Bold">Body Template:</Run>
-  <Run> JSON payload with dynamic placeholders like </Run>
+  <Run> JSON payload with dynamic placeholders: </Run>
+  <Run FontStyle="Italic">{{rulename}}</Run><Run>, </Run>
+  <Run FontStyle="Italic">{{metric}}</Run>
+  <Run> (the metric that fired), </Run>
+  <Run FontStyle="Italic">{{condition}}</Run><Run>, </Run>
+  <Run FontStyle="Italic">{{threshold}}</Run><Run>, </Run>
+  <Run FontStyle="Italic">{{value}}</Run>
+  <Run> and </Run>
+  <Run FontStyle="Italic">{{timestamp}}</Run>
+  <Run>. </Run>
   <Run FontStyle="Italic">{{plugin}}</Run>
-  <Run> or </Run>
-  <Run FontStyle="Italic">{{condition}} etc</Run><Run>.</Run>
+  <Run> is kept for older templates and receives the same metric name.</Run>
   <LineBreak />
   <Run>   • </Run>
   <Run FontWeight="Bold">Headers:</Run>

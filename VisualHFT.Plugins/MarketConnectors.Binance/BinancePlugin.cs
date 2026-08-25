@@ -288,10 +288,12 @@ namespace MarketConnectors.Binance
                     {
                         try
                         {
-                            data.Data.EventTime = data.ReceiveTime;
-                            if (Math.Abs(DateTime.Now.Subtract(data.Data.EventTime.ToLocalTime()).TotalSeconds) > 1)
+                            // EventTime is the venue's own event timestamp ("E") — never overwrite it.
+                            // The freshness warn keys on RECEIVE time: it measures in-process dispatch
+                            // delay, and must not fire on venue/local clock offset.
+                            if (Math.Abs(DateTime.Now.Subtract(data.ReceiveTime.ToLocalTime()).TotalSeconds) > 1)
                             {
-                                var _msg = $"Rates are coming late at {Math.Abs(DateTime.Now.Subtract(data.Data.EventTime.ToLocalTime()).TotalSeconds)} seconds.";
+                                var _msg = $"Rates are coming late at {Math.Abs(DateTime.Now.Subtract(data.ReceiveTime.ToLocalTime()).TotalSeconds)} seconds.";
                                 log.Warn(_msg);
                                 HelperNotificationManager.Instance.AddNotification(this.Name, _msg, HelprNorificationManagerTypes.WARNING, HelprNorificationManagerCategories.PLUGINS);
                             }
@@ -662,6 +664,20 @@ namespace MarketConnectors.Binance
         #endregion
 
         // ✅ FIX: Thread-safe UpdateOrderBook with TryGetValue
+        /// <summary>
+        /// The single decision point for the venue's book timestamp. Binance's diff-depth
+        /// stream carries the exchange event time (wire field "E"); return it in local
+        /// kind. A frame without it returns null — a default(DateTime) stamp would
+        /// fabricate a colossal latency spike, and receive time must never masquerade
+        /// as exchange time.
+        /// </summary>
+        public static DateTime? ResolveBookTimestamp(IBinanceEventOrderBook lob_update)
+        {
+            if (lob_update == null || lob_update.EventTime == default)
+                return null;
+            return lob_update.EventTime.ToLocalTime();
+        }
+
         private void UpdateOrderBook(IBinanceEventOrderBook lob_update, string normalizedSymbol)
         {
             // ✅ Use TryGetValue for thread safety
@@ -674,7 +690,7 @@ namespace MarketConnectors.Binance
                 return;
             }
 
-            DateTime ts = lob_update.EventTime.ToLocalTime();
+            DateTime? exchangeTs = ResolveBookTimestamp(lob_update);
 
             if (lob_update.LastUpdateId <= local_lob.Sequence)
                 return;
@@ -685,6 +701,7 @@ namespace MarketConnectors.Binance
 
             // ✅ Cache DateTime.Now once
             var now = DateTime.Now;
+            DateTime ts = exchangeTs ?? now;
 
             foreach (var item in lob_update.Bids)
             {
@@ -741,7 +758,9 @@ namespace MarketConnectors.Binance
             }
             
             local_lob.Sequence = lob_update.LastUpdateId;
-            local_lob.LastUpdated = ts;
+            // Venue event time when the frame carries one; null otherwise (never
+            // receive time — Mkt Lat measures the venue clock, not our decode delay).
+            local_lob.LastUpdated = exchangeTs;
             RaiseOnDataReceived(local_lob);
         }
 
