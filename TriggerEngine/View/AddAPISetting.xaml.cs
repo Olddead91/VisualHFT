@@ -43,7 +43,7 @@ namespace VisualHFT.TriggerEngine.View
             }
             else
             {
-                restApiAction.BodyTemplate = "{\r\n\r\n\"plugin\":\"{{plugin}}\",\r\n\"value\":\"{{value}}\",\r\n\"timestamp\":\"{{timestamp}}\", \r\n}";
+                restApiAction.BodyTemplate = "{\r\n\r\n\"metric\":\"{{metric}}\",\r\n\"value\":\"{{value}}\",\r\n\"timestamp\":\"{{timestamp}}\", \r\n}";
             }
             this.DataContext = restApiAction;
         }

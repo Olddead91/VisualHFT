@@ -45,8 +45,8 @@ namespace MarketConnectors.KuCoin
         private readonly ReaderWriterLockSlim _orderBooksLock = new ReaderWriterLockSlim();
 
         private readonly object _buffersLock = new object();
-        private Dictionary<string, HelperCustomQueue<Tuple<DateTime, string, KucoinStreamOrderBook>>> _eventBuffers =
-            new Dictionary<string, HelperCustomQueue<Tuple<DateTime, string, KucoinStreamOrderBook>>>();
+        private Dictionary<string, HelperCustomQueue<Tuple<DateTime?, string, KucoinStreamOrderBook>>> _eventBuffers =
+            new Dictionary<string, HelperCustomQueue<Tuple<DateTime?, string, KucoinStreamOrderBook>>>();
 
         private Dictionary<string, HelperCustomQueue<Tuple<string, KucoinTrade>>> _tradesBuffers =
             new Dictionary<string, HelperCustomQueue<Tuple<string, KucoinTrade>>>();
@@ -172,7 +172,7 @@ namespace MarketConnectors.KuCoin
                 foreach (var symbol in GetAllNormalizedSymbols())
                 {
                     _eventBuffers.Add(symbol,
-                        new HelperCustomQueue<Tuple<DateTime, string, KucoinStreamOrderBook>>(
+                        new HelperCustomQueue<Tuple<DateTime?, string, KucoinStreamOrderBook>>(
                             $"<Tuple<DateTime, string, KucoinStreamOrderBookChanged>>_{this.Name.Replace(" Plugin", "")}",
                             eventBuffers_onReadAction, eventBuffers_onErrorAction));
                     _tradesBuffers.Add(symbol,
@@ -449,16 +449,19 @@ namespace MarketConnectors.KuCoin
                                 {
                                     // Per-frame freshness guard (shared + virtual-clock — see BasePluginDataRetriever).
                                     CheckFrameFreshnessAndWarn(data.ReceiveTime.ToLocalTime());
-                                    HelperCustomQueue<Tuple<DateTime, string, KucoinStreamOrderBook>> buffer;
+                                    HelperCustomQueue<Tuple<DateTime?, string, KucoinStreamOrderBook>> buffer;
                                     lock (_buffersLock) // ✅ Protect access
                                     {
                                         if (!_eventBuffers.TryGetValue(normalizedSymbol, out buffer))
                                             return; // Buffer was cleared
                                     }
 
+                                    // The BOOK stamp is the venue's own frame timestamp ("time",
+                                    // null when absent) — ReceiveTime stays the freshness-guard
+                                    // input only, never the book stamp.
                                     buffer.Add(
-                                        new Tuple<DateTime, string, KucoinStreamOrderBook>(
-                                            data.ReceiveTime.ToLocalTime(), normalizedSymbol, data.Data));
+                                        new Tuple<DateTime?, string, KucoinStreamOrderBook>(
+                                            ResolveBookTimestamp(data.Data), normalizedSymbol, data.Data));
                                 }
                             }
                             catch (Exception ex)
@@ -573,7 +576,7 @@ namespace MarketConnectors.KuCoin
             _timerPing.Enabled = true; // Start the timer
         }
 
-        private void eventBuffers_onReadAction(Tuple<DateTime, string, KucoinStreamOrderBook> eventData)
+        private void eventBuffers_onReadAction(Tuple<DateTime?, string, KucoinStreamOrderBook> eventData)
         {
             UpdateOrderBook(eventData.Item3, eventData.Item2, eventData.Item1);
         }
@@ -704,7 +707,21 @@ namespace MarketConnectors.KuCoin
 
         #endregion
 
-        private void UpdateOrderBook(KucoinStreamOrderBook lob_update, string symbol, DateTime ts)
+        /// <summary>
+        /// The single decision point for the venue's book timestamp. KuCoin's aggregated
+        /// level-2 stream carries a frame-level exchange timestamp (wire field "time");
+        /// return it in local kind. A frame without it returns null — a default(DateTime)
+        /// stamp would fabricate a colossal latency spike, and receive time must never
+        /// masquerade as exchange time.
+        /// </summary>
+        public static DateTime? ResolveBookTimestamp(KucoinStreamOrderBook lob_update)
+        {
+            if (lob_update == null || lob_update.Timestamp == default)
+                return null;
+            return lob_update.Timestamp.ToLocalTime();
+        }
+
+        private void UpdateOrderBook(KucoinStreamOrderBook lob_update, string symbol, DateTime? ts)
         {
             _orderBooksLock.EnterWriteLock();
 
@@ -747,7 +764,7 @@ namespace MarketConnectors.KuCoin
                         if (item.Quantity == 0)
                             local_lob.DeleteLevel(true, string.Empty, (double)item.Price, (double)item.Quantity);
                         else
-                            local_lob.AddOrUpdateLevel(true, string.Empty, (double)item.Price, (double)item.Quantity, DateTime.Now, ts);
+                            local_lob.AddOrUpdateLevel(true, string.Empty, (double)item.Price, (double)item.Quantity, DateTime.Now, ts ?? DateTime.Now);
                     }
 
                     foreach (var item in lob_update.Changes.Asks)
@@ -758,7 +775,7 @@ namespace MarketConnectors.KuCoin
                         if (item.Quantity == 0)
                             local_lob.DeleteLevel(false, string.Empty, (double)item.Price, (double)item.Quantity);
                         else
-                            local_lob.AddOrUpdateLevel(false, string.Empty, (double)item.Price, (double)item.Quantity, DateTime.Now, ts);
+                            local_lob.AddOrUpdateLevel(false, string.Empty, (double)item.Price, (double)item.Quantity, DateTime.Now, ts ?? DateTime.Now);
                     }
 
                     local_lob.Sequence = lob_update.SequenceEnd;

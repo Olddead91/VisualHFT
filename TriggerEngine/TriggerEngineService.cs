@@ -448,7 +448,12 @@ namespace VisualHFT.TriggerEngine
             {
                 var body = action.RestApi.BodyTemplate
                     .Replace("{{rulename}}", ruleName)
+                    // {{plugin}} historically receives the METRIC name (the display name does
+                    // not exist at fire time); kept as-is so existing saved templates keep
+                    // their current output. {{metric}} is the documented, correctly-named
+                    // placeholder for the same value.
                     .Replace("{{plugin}}", metric)
+                    .Replace("{{metric}}", metric)
                     .Replace("{{condition}}", condition.Operator.ToString())
                     .Replace("{{threshold}}", condition.Threshold.ToString())
                     .Replace("{{value}}", value.ToString())
