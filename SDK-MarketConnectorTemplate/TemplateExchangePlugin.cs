@@ -49,8 +49,9 @@ namespace MarketConnector.Template
 
         public TemplateExchangePlugin()
         {
-            // Wire automatic reconnection. The base class invokes
-            // InternalStartAsync() whenever HandleConnectionLost() fires.
+            // Register the internal start with the base class. On each reconnection attempt the
+            // engine calls StartAsync(), which awaits InternalStartAsync() itself; the engine does
+            // not invoke the registered action separately.
             SetReconnectionAction(InternalStartAsync);
             log.Info($"{Name} has been loaded.");
         }

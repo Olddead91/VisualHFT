@@ -13,6 +13,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Bitfinex.Net.Enums;
+using Bitfinex.Net.Interfaces.Clients;
 using VisualHFT.Commons.PluginManager;
 using VisualHFT.UserSettings;
 using VisualHFT.Commons.Pools;
@@ -36,8 +37,8 @@ namespace MarketConnectors.Bitfinex
         private bool isReconnecting = false;
 
         private PlugInSettings _settings;
-        private BitfinexSocketClient _socketClient;
-        private BitfinexRestClient _restClient;
+        private IBitfinexSocketClient _socketClient;
+        private IBitfinexRestClient _restClient;
         private Dictionary<string, VisualHFT.Model.OrderBook> _localOrderBooks = new Dictionary<string, VisualHFT.Model.OrderBook>();
         private Dictionary<string, HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>>> _eventBuffers = new();
         private Dictionary<string, HelperCustomQueue<Tuple<string, BitfinexTradeSimple>>> _tradesBuffers = new();
@@ -73,20 +74,6 @@ namespace MarketConnectors.Bitfinex
         {
             await base.StartAsync(); // ✅ This sets Status = STARTING
 
-            _socketClient = new BitfinexSocketClient(options =>
-            {
-                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
-                    options.ApiCredentials = new BitfinexCredentials(_settings.ApiKey, _settings.ApiSecret);
-                options.Environment = BitfinexEnvironment.Live;
-            });
-
-            _restClient = new BitfinexRestClient(options =>
-            {
-                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
-                    options.ApiCredentials = new BitfinexCredentials(_settings.ApiKey, _settings.ApiSecret);
-                options.Environment = BitfinexEnvironment.Live;
-            });
-
             // ✅ FIX: Explicitly report STARTING status so transition history captures it
             RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.CONNECTING));
 
@@ -104,6 +91,39 @@ namespace MarketConnectors.Bitfinex
             }
         }
         
+        /// <summary>Seam so a test can substitute the venue clients and observe their lifetime.</summary>
+        protected virtual IBitfinexSocketClient CreateSocketClient()
+        {
+            return new BitfinexSocketClient(options =>
+            {
+                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
+                    options.ApiCredentials = new BitfinexCredentials(_settings.ApiKey, _settings.ApiSecret);
+                options.Environment = BitfinexEnvironment.Live;
+            });
+        }
+
+        /// <summary>Seam so a test can substitute the venue clients and observe their lifetime.</summary>
+        protected virtual IBitfinexRestClient CreateRestClient()
+        {
+            return new BitfinexRestClient(options =>
+            {
+                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
+                    options.ApiCredentials = new BitfinexCredentials(_settings.ApiKey, _settings.ApiSecret);
+                options.Environment = BitfinexEnvironment.Live;
+            });
+        }
+
+        internal void ReplaceClients()
+        {
+            // The previous clients are torn down by ClearAsync while still alive, then disposed and replaced here,
+            // under the start/stop lock, so a concurrent start cannot dispose a client another thread is subscribing on.
+            _socketClient?.Dispose();
+            _restClient?.Dispose();
+
+            _socketClient = CreateSocketClient();
+            _restClient = CreateRestClient();
+        }
+
         private async Task InternalStartAsync()
         {
             // ✅ FIX: Add synchronization
@@ -111,6 +131,7 @@ namespace MarketConnectors.Bitfinex
             try
             {
                 await ClearAsync();
+                ReplaceClients();
 
                 // Initialize event buffer for each symbol
                 foreach (var symbol in GetAllNormalizedSymbols())
@@ -146,15 +167,6 @@ namespace MarketConnectors.Bitfinex
                 Status = ePluginStatus.STOPPING;
                 log.Info($"{this.Name} is stopping.");
 
-                // ✅ FIX: Force cancel any pending reconnections by closing subscriptions first
-                UnattachEventHandlers(deltaSubscription?.Data);
-                UnattachEventHandlers(tradesSubscription?.Data);
-                
-                if (deltaSubscription != null && deltaSubscription.Data != null)
-                    await deltaSubscription.Data.CloseAsync();
-                if (tradesSubscription != null && tradesSubscription.Data != null)
-                    await tradesSubscription.Data.CloseAsync();
-
                 await ClearAsync();
                 RaiseOnDataReceived(new List<VisualHFT.Model.OrderBook>());
                 RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.DISCONNECTED));
@@ -168,10 +180,34 @@ namespace MarketConnectors.Bitfinex
         }
         public async Task ClearAsync()
         {
-            // ✅ Subscription cleanup is done in StopAsync to prevent reconnection races
-            // Only unsubscribe here if not already done
-            if (_socketClient != null)
-                await _socketClient.UnsubscribeAllAsync();
+            // On the reconnect path the outgoing socket is by definition unhealthy; its teardown failing
+            // must not keep the dead client alive or strand StopAsync at STOPPING. The subscription
+            // teardown lives here rather than in StopAsync because BOTH stop paths - StopAsync and the
+            // reconnect's InternalStartAsync - must tear the subscriptions down on the live OUTGOING
+            // client and tolerate a dead one.
+            // Error, not Warn: Telemetry/TelemetryAppender.cs sets Threshold = Level.Error, so a Warn
+            // never ships and a fleet-wide teardown failure would be invisible in production telemetry.
+            // Not LogException, which would also raise a user-facing notification for a condition this
+            // connector has already handled.
+            try
+            {
+                UnattachEventHandlers(deltaSubscription?.Data);
+                UnattachEventHandlers(tradesSubscription?.Data);
+                if (deltaSubscription != null && deltaSubscription.Data != null)
+                    await deltaSubscription.Data.CloseAsync();
+                if (tradesSubscription != null && tradesSubscription.Data != null)
+                    await tradesSubscription.Data.CloseAsync();
+                if (_socketClient != null)
+                    await _socketClient.UnsubscribeAllAsync();
+            }
+            catch (Exception ex)
+            {
+                log.Error($"{this.Name}: teardown of the outgoing socket failed; continuing with local cleanup.", ex);
+            }
+            // Dropped unconditionally, whether the teardown succeeded or threw: the next stop must not
+            // close a subscription belonging to a client this one has already replaced or disposed.
+            deltaSubscription = null;
+            tradesSubscription = null;
 
             _timerPing?.Stop();
             _timerPing?.Dispose();
@@ -342,56 +378,8 @@ namespace MarketConnectors.Bitfinex
                     symbol,
                     Precision.PrecisionLevel0, Frequency.Realtime,
                     _settings.DepthLevels,
-                    data =>
-                    {
-                        // Buffer the events
-                        if (data.Data != null)
-                        {
-                            try
-                            {
-                                if (data.UpdateType == SocketUpdateType.Snapshot)
-                                {
-                                    UpdateOrderBookSnapshot(data.Data, normalizedSymbol);
-                                }
-                                else
-                                {
-                                    // ✅ FIX: Thread-safe buffer access
-                                    HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>> buffer;
-                                    lock (_buffersLock)
-                                    {
-                                        if (!_eventBuffers.TryGetValue(normalizedSymbol, out buffer))
-                                            return; // Buffer was cleared during reconnection
-                                    }
-                                    
-                                    // The BOOK stamp is the venue's server timestamp carried on the
-                                    // wrapper (DataTime, null when absent) — never local receive time.
-                                    var exchangeTs = ResolveBookTimestamp(data.DataTime);
-                                    foreach (var item in data.Data)
-                                    {
-                                        buffer.Add(
-                                            new Tuple<DateTime?, string, BitfinexOrderBookEntry>(
-                                                exchangeTs, normalizedSymbol, item));
-                                    }
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                var _error = $"Will reconnect. Unhandled error while receiving delta market data for {normalizedSymbol}.";
-                                LogException(ex, _error);
-                                
-                                // ✅ FIX: Pause queue before reconnecting
-                                lock (_buffersLock)
-                                {
-                                    if (_eventBuffers.TryGetValue(normalizedSymbol, out var buffer))
-                                    {
-                                        buffer?.PauseConsumer();
-                                    }
-                                }
-                                
-                                Task.Run(async () => await HandleConnectionLost(_error, ex));
-                            }
-                        }
-                    }, null, new CancellationToken());
+                    data => OnDeltaReceived(data, normalizedSymbol),
+                    null, new CancellationToken());
                 if (deltaSubscription.Success)
                 {
                     AttachEventHandlers(deltaSubscription.Data);
@@ -400,6 +388,62 @@ namespace MarketConnectors.Bitfinex
                 {
                     var _error = $"Unsuccessful deltas subscription for {normalizedSymbol} error: {deltaSubscription.Error}";
                     throw new Exception(_error);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Level2 delta websocket callback (hot path: one call per venue frame). A snapshot frame
+        /// is applied to the book directly; a delta frame is buffered into the symbol's queue,
+        /// whose consumer applies it off the socket thread.
+        /// </summary>
+        internal void OnDeltaReceived(DataEvent<BitfinexOrderBookEntry[]> data, string normalizedSymbol)
+        {
+            // Buffer the events
+            if (data.Data != null)
+            {
+                try
+                {
+                    if (data.UpdateType == SocketUpdateType.Snapshot)
+                    {
+                        UpdateOrderBookSnapshot(data.Data, normalizedSymbol);
+                    }
+                    else
+                    {
+                        // ✅ FIX: Thread-safe buffer access
+                        HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>> buffer;
+                        lock (_buffersLock)
+                        {
+                            if (!_eventBuffers.TryGetValue(normalizedSymbol, out buffer))
+                                return; // Buffer was cleared during reconnection
+                        }
+                        
+                        // The BOOK stamp is the venue's server timestamp carried on the
+                        // wrapper (DataTime, null when absent) — never local receive time.
+                        var exchangeTs = ResolveBookTimestamp(data.DataTime);
+                        foreach (var item in data.Data)
+                        {
+                            buffer.Add(
+                                new Tuple<DateTime?, string, BitfinexOrderBookEntry>(
+                                    exchangeTs, normalizedSymbol, item));
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    var _error = $"Will reconnect. Unhandled error while receiving delta market data for {normalizedSymbol}.";
+                    LogException(ex, _error);
+                    
+                    // ✅ FIX: Pause queue before reconnecting
+                    lock (_buffersLock)
+                    {
+                        if (_eventBuffers.TryGetValue(normalizedSymbol, out var buffer))
+                        {
+                            buffer?.PauseConsumer();
+                        }
+                    }
+                    
+                    Task.Run(async () => await HandleConnectionLost(_error, ex));
                 }
             }
         }
@@ -642,7 +686,11 @@ namespace MarketConnectors.Bitfinex
         }
         private void UpdateOrderBookSnapshot(IEnumerable<BitfinexOrderBookEntry> data, string symbol)
         {
-            if (!_localOrderBooks.TryGetValue(symbol, out VisualHFT.Model.OrderBook? lob))
+            // Treat a null value like an absent key: InitializeSnapshotsAsync seeds a null placeholder
+            // until the REST snapshot replaces it, and Bitfinex sends a Snapshot right after subscribing.
+            // A frame in that window used to dereference the placeholder (the production NullReferenceException
+            // storm) and request a reconnect that reopened it; the REST snapshot seeds the book, so drop it.
+            if (!_localOrderBooks.TryGetValue(symbol, out VisualHFT.Model.OrderBook? lob) || lob == null)
             {
                 return;
             }
@@ -730,12 +778,23 @@ namespace MarketConnectors.Bitfinex
                 _disposed = true;
                 if (disposing)
                 {
-                    UnattachEventHandlers(deltaSubscription?.Data);
-                    UnattachEventHandlers(tradesSubscription?.Data);
-                    
-                    _socketClient?.UnsubscribeAllAsync();
-                    _socketClient?.Dispose();
-                    _restClient?.Dispose();
+                    // App-exit disposal reaches the same dead subscriptions ClearAsync now tolerates, so
+                    // it needs the same guard: a throw here would skip everything below - the ping timer,
+                    // the start/stop lock, the queues and the order books. Error, not Warn, for the reason
+                    // given in ClearAsync.
+                    try
+                    {
+                        UnattachEventHandlers(deltaSubscription?.Data);
+                        UnattachEventHandlers(tradesSubscription?.Data);
+
+                        _socketClient?.UnsubscribeAllAsync();
+                        _socketClient?.Dispose();
+                        _restClient?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Error($"{this.Name}: teardown of the outgoing socket failed during dispose; continuing with local cleanup.", ex);
+                    }
                     _timerPing?.Dispose();
                     
                     // ✅ FIX: Dispose semaphore

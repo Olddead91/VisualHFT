@@ -21,6 +21,17 @@
     <PackageReference Include="xunit.v3" Version="3.2.2" />
   </ItemGroup>
 
+  <!--
+    Serialises the assembly and its test collections, matching the connector test projects. Required
+    here, not cosmetic: OrderBookDisposedGuardTests parks a thread on OrderBookData's
+    ReaderWriterLockSlim and spins on WaitingWriteCount, and every test in this project borrows from
+    the process-wide static BookItemPool that HelperCustomQueueTests also touches. Run in parallel,
+    both facts become order-dependent.
+  -->
+  <ItemGroup>
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\..\VisualHFT.Commons\VisualHFT.Commons.csproj" />
   </ItemGroup>

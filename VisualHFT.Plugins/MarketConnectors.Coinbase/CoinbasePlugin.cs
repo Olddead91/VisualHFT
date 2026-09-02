@@ -10,6 +10,7 @@ using CryptoExchange.Net.Objects;
 using VisualHFT.Commons.Helpers;
 using VisualHFT.Commons.Pools;
 using Coinbase.Net.Clients;
+using Coinbase.Net.Interfaces.Clients;
 using Coinbase.Net.Objects.Models;
 using Coinbase.Net.Enums;
 using Newtonsoft.Json.Linq;
@@ -28,8 +29,8 @@ namespace MarketConnectors.Coinbase
         private bool isReconnecting = false;
 
         private PlugInSettings _settings;
-        private CoinbaseSocketClient _socketClient;
-        private CoinbaseRestClient _restClient;
+        private ICoinbaseSocketClient _socketClient;
+        private ICoinbaseRestClient _restClient;
 
         // ✅ FIX: Use ConcurrentDictionary for thread safety
         private readonly ConcurrentDictionary<string, VisualHFT.Model.OrderBook> _localOrderBooks =
@@ -86,27 +87,6 @@ namespace MarketConnectors.Coinbase
         {
 
             await base.StartAsync(); //call the base first
-            _socketClient = new CoinbaseSocketClient(options =>
-            {
-                if (!string.IsNullOrEmpty(_settings.ApiKey) && !string.IsNullOrEmpty(_settings.ApiSecret))
-                {
-
-                    options.ApiCredentials = new CoinbaseCredentials(_settings.ApiKey, _settings.ApiSecret);
-                }
-
-                options.Environment = CoinbaseEnvironment.Live;
-            });
-
-
-            _restClient = new CoinbaseRestClient(options =>
-            {
-                if (!string.IsNullOrEmpty(_settings.ApiKey) && !string.IsNullOrEmpty(_settings.ApiSecret))
-                {
-                    options.ApiCredentials = new CoinbaseCredentials(_settings.ApiKey, _settings.ApiSecret);
-                }
-
-                options.Environment = CoinbaseEnvironment.Live;
-            });
 
 
             try
@@ -128,6 +108,46 @@ namespace MarketConnectors.Coinbase
             }
         }
 
+        /// <summary>Seam so a test can substitute the venue clients and observe their lifetime.</summary>
+        protected virtual ICoinbaseSocketClient CreateSocketClient()
+        {
+            return new CoinbaseSocketClient(options =>
+            {
+                if (!string.IsNullOrEmpty(_settings.ApiKey) && !string.IsNullOrEmpty(_settings.ApiSecret))
+                {
+
+                    options.ApiCredentials = new CoinbaseCredentials(_settings.ApiKey, _settings.ApiSecret);
+                }
+
+                options.Environment = CoinbaseEnvironment.Live;
+            });
+        }
+
+        /// <summary>Seam so a test can substitute the venue clients and observe their lifetime.</summary>
+        protected virtual ICoinbaseRestClient CreateRestClient()
+        {
+            return new CoinbaseRestClient(options =>
+            {
+                if (!string.IsNullOrEmpty(_settings.ApiKey) && !string.IsNullOrEmpty(_settings.ApiSecret))
+                {
+                    options.ApiCredentials = new CoinbaseCredentials(_settings.ApiKey, _settings.ApiSecret);
+                }
+
+                options.Environment = CoinbaseEnvironment.Live;
+            });
+        }
+
+        internal void ReplaceClients()
+        {
+            // The previous clients are torn down by ClearAsync while still alive, then disposed and replaced here,
+            // under the start/stop lock, so a concurrent start cannot dispose a client another thread is subscribing on.
+            _socketClient?.Dispose();
+            _restClient?.Dispose();
+
+            _socketClient = CreateSocketClient();
+            _restClient = CreateRestClient();
+        }
+
         private async Task InternalStartAsync()
         {
             // ✅ FIX: Add synchronization
@@ -135,6 +155,7 @@ namespace MarketConnectors.Coinbase
             try
             {
                 await ClearAsync();
+                ReplaceClients();
 
                 foreach (var symbol in GetAllNormalizedSymbols())
                 {
@@ -186,14 +207,34 @@ namespace MarketConnectors.Coinbase
 
         public async Task ClearAsync()
         {
-            UnattachEventHandlers(deltaSubscription?.Data);
-            UnattachEventHandlers(tradesSubscription?.Data);
-            if (_socketClient != null)
-                await _socketClient.UnsubscribeAllAsync();
-            if (deltaSubscription != null && deltaSubscription.Data != null)
-                await deltaSubscription.Data.CloseAsync();
-            if (tradesSubscription != null && tradesSubscription.Data != null)
-                await tradesSubscription.Data.CloseAsync();
+            // On the reconnect path the outgoing socket is by definition unhealthy; its teardown failing
+            // must not keep the dead client alive or strand StopAsync at STOPPING. The subscription
+            // teardown lives here rather than in StopAsync because BOTH stop paths - StopAsync and the
+            // reconnect's InternalStartAsync - must tear the subscriptions down on the live OUTGOING
+            // client and tolerate a dead one.
+            // Error, not Warn: Telemetry/TelemetryAppender.cs sets Threshold = Level.Error, so a Warn
+            // never ships and a fleet-wide teardown failure would be invisible in production telemetry.
+            // Not LogException, which would also raise a user-facing notification for a condition this
+            // connector has already handled.
+            try
+            {
+                UnattachEventHandlers(deltaSubscription?.Data);
+                UnattachEventHandlers(tradesSubscription?.Data);
+                if (_socketClient != null)
+                    await _socketClient.UnsubscribeAllAsync();
+                if (deltaSubscription != null && deltaSubscription.Data != null)
+                    await deltaSubscription.Data.CloseAsync();
+                if (tradesSubscription != null && tradesSubscription.Data != null)
+                    await tradesSubscription.Data.CloseAsync();
+            }
+            catch (Exception ex)
+            {
+                log.Error($"{this.Name}: teardown of the outgoing socket failed; continuing with local cleanup.", ex);
+            }
+            // Dropped unconditionally, whether the teardown succeeded or threw: the next stop must not
+            // close a subscription belonging to a client this one has already replaced or disposed.
+            deltaSubscription = null;
+            tradesSubscription = null;
             _timerPing?.Stop();
             _timerPing?.Dispose();
 
@@ -312,51 +353,8 @@ namespace MarketConnectors.Coinbase
                 log.Info($"{this.Name}: sending WS Delta Subscription {normalizedSymbol} ");
                 deltaSubscription = await _socketClient.AdvancedTradeApi.SubscribeToOrderBookUpdatesAsync(
                     symbol,
-                    data =>
-                    {
-                        // Buffer the events
-                        if (data.Data != null)
-                        {
-                            try
-                            {
-                                if (data.UpdateType == SocketUpdateType.Snapshot)
-                                {
-                                    return; //not valid condition
-                                }
-                                else
-                                {
-                                    if (Math.Abs(DateTime.Now.Subtract(data.ReceiveTime.ToLocalTime()).TotalSeconds) > 1)
-                                    {
-                                        var _msg =
-                                            $"Rates are coming late at {Math.Abs(DateTime.Now.Subtract(data.ReceiveTime.ToLocalTime()).TotalSeconds)} seconds.";
-                                        log.Warn(_msg);
-                                        HelperNotificationManager.Instance.AddNotification(this.Name, _msg,
-                                            HelprNorificationManagerTypes.WARNING,
-                                            HelprNorificationManagerCategories.PLUGINS);
-                                    }
-
-                                    // The BOOK stamp is the venue's own event time (newest entry
-                                    // "event_time", null when absent) — ReceiveTime stays the
-                                    // freshness-warn input only, never the book stamp.
-                                    _eventBuffers[normalizedSymbol].Add(
-                                        new Tuple<DateTime?, string, CoinbaseOrderBookUpdate>(
-                                            ResolveBookTimestamp(data.Data), normalizedSymbol, data.Data));
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                string _normalizedSymbol = "(null)";
-                                if (data != null && data.Data != null)
-                                    _normalizedSymbol = GetNormalizedSymbol(data.Symbol);
-
-
-                                var _error =
-                                    $"Will reconnect. Unhandled error while receiving delta market data for {_normalizedSymbol}.";
-                                LogException(ex, _error);
-                                Task.Run(async () => await HandleConnectionLost(_error, ex));
-                            }
-                        }
-                    }, new CancellationToken());
+                    data => OnDeltaReceived(data, normalizedSymbol),
+                    new CancellationToken());
                 if (deltaSubscription.Success)
                 {
                     AttachEventHandlers(deltaSubscription.Data);
@@ -371,7 +369,65 @@ namespace MarketConnectors.Coinbase
             }
         }
 
-        private async Task InitializeSnapshotsAsync()
+        /// <summary>
+        /// Level2 delta websocket callback (hot path: one call per venue frame). Buffers the frame
+        /// into the symbol's queue; the queue consumer applies it to the book off the socket thread.
+        /// </summary>
+        internal void OnDeltaReceived(DataEvent<CoinbaseOrderBookUpdate> data, string normalizedSymbol)
+        {
+            // Buffer the events
+            if (data.Data != null)
+            {
+                try
+                {
+                    if (data.UpdateType == SocketUpdateType.Snapshot)
+                    {
+                        return; //not valid condition
+                    }
+                    else
+                    {
+                        if (Math.Abs(DateTime.Now.Subtract(data.ReceiveTime.ToLocalTime()).TotalSeconds) > 1)
+                        {
+                            var _msg =
+                                $"Rates are coming late at {Math.Abs(DateTime.Now.Subtract(data.ReceiveTime.ToLocalTime()).TotalSeconds)} seconds.";
+                            log.Warn(_msg);
+                            HelperNotificationManager.Instance.AddNotification(this.Name, _msg,
+                                HelprNorificationManagerTypes.WARNING,
+                                HelprNorificationManagerCategories.PLUGINS);
+                        }
+
+                        // No buffer for this symbol = the plugin is mid-stop / mid-reconnect
+                        // (ClearAsync disposed and cleared the queues while the socket was still
+                        // delivering). Drop the frame. It must NOT fall through to the catch below:
+                        // that turned every in-flight delta into a reconnect request
+                        // (KeyNotFoundException storm observed in production on v0.1.11).
+                        if (!_eventBuffers.TryGetValue(normalizedSymbol, out var buffer))
+                            return; // Buffer was cleared during reconnection
+
+                        // The BOOK stamp is the venue's own event time (newest entry
+                        // "event_time", null when absent) — ReceiveTime stays the
+                        // freshness-warn input only, never the book stamp.
+                        buffer.Add(
+                            new Tuple<DateTime?, string, CoinbaseOrderBookUpdate>(
+                                ResolveBookTimestamp(data.Data), normalizedSymbol, data.Data));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    string _normalizedSymbol = "(null)";
+                    if (data != null && data.Data != null)
+                        _normalizedSymbol = GetNormalizedSymbol(data.Symbol);
+
+
+                    var _error =
+                        $"Will reconnect. Unhandled error while receiving delta market data for {_normalizedSymbol}.";
+                    LogException(ex, _error);
+                    Task.Run(async () => await HandleConnectionLost(_error, ex));
+                }
+            }
+        }
+
+        internal async Task InitializeSnapshotsAsync()
         {
             try
             {
@@ -406,6 +462,11 @@ namespace MarketConnectors.Coinbase
             catch (Exception ex)
             {
                 LogException(ex, "InitializeSnapshotsAsync");
+                // A failed snapshot must fail the start (same as a failed subscription) so the
+                // reconnection engine retries and, if it keeps failing, ends in STOPPED_FAILED.
+                // Swallowing it left every later symbol with no book and a paused delta consumer
+                // while the plugin reported CONNECTED; the trades consumer then threw per trade.
+                throw;
             }
         }
 
@@ -433,7 +494,7 @@ namespace MarketConnectors.Coinbase
             Task.Run(async () => await HandleConnectionLost(_error, ex));
         }
 
-        private void tradesBuffers_onReadAction(Tuple<string, CoinbaseTrade> item)
+        internal void tradesBuffers_onReadAction(Tuple<string, CoinbaseTrade> item)
         {
             var trade = tradePool.Get();
             trade.Price = item.Item2.Price;
@@ -443,7 +504,12 @@ namespace MarketConnectors.Coinbase
             trade.ProviderId = _settings.Provider.ProviderID;
             trade.ProviderName = _settings.Provider.ProviderName;
             trade.IsBuy = item.Item2.OrderSide == OrderSide.Buy;
-            trade.MarketMidPrice = _localOrderBooks[item.Item1] == null ? 0 : _localOrderBooks[item.Item1].MidPrice;
+            // The book can be ABSENT (ClearAsync emptied the map while trades were still queued),
+            // not only null (not loaded yet). Both stamp mid 0; an indexer here threw
+            // KeyNotFoundException into the queue's error action and requested a reconnect.
+            trade.MarketMidPrice = _localOrderBooks.TryGetValue(item.Item1, out var lob) && lob != null
+                ? lob.MidPrice
+                : 0;
 
             RaiseOnDataReceived(trade);
             tradePool.Return(trade);
@@ -805,11 +871,22 @@ namespace MarketConnectors.Coinbase
                 _disposed = true;
                 if (disposing)
                 {
-                    UnattachEventHandlers(deltaSubscription?.Data);
-                    UnattachEventHandlers(tradesSubscription?.Data);
-                    _socketClient?.UnsubscribeAllAsync();
-                    _socketClient?.Dispose();
-                    _restClient?.Dispose();
+                    // App-exit disposal reaches the same dead subscriptions ClearAsync now tolerates, so
+                    // it needs the same guard: a throw here would skip everything below - the ping timer,
+                    // the start/stop lock, the queues and the order books. Error, not Warn, for the reason
+                    // given in ClearAsync.
+                    try
+                    {
+                        UnattachEventHandlers(deltaSubscription?.Data);
+                        UnattachEventHandlers(tradesSubscription?.Data);
+                        _socketClient?.UnsubscribeAllAsync();
+                        _socketClient?.Dispose();
+                        _restClient?.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        log.Error($"{this.Name}: teardown of the outgoing socket failed during dispose; continuing with local cleanup.", ex);
+                    }
                     _timerPing?.Dispose();
                     _startStopLock?.Dispose();
 

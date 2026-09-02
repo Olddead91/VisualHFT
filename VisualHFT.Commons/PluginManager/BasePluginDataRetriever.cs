@@ -1,6 +1,7 @@
 ﻿using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using VisualHFT.Commons.Extensions;
 using VisualHFT.Commons.Helpers;
 using VisualHFT.DataRetriever;
 using VisualHFT.Enums;
@@ -203,7 +204,8 @@ namespace VisualHFT.Commons.PluginManager
         private Func<Task> _internalStartAsync;
         /// <summary>
         /// To use the internal and automated reconnection process, we need to define and pass a local method, which have defined all the steps required to do the connection.
-        /// This way, the internal reconnection process, could take this, and perform its execution as required.
+        /// The reconnection engine does NOT invoke this action itself: every connector's StartAsync already
+        /// awaits the same internal start, so invoking it here too ran two full connect bursts per attempt.
         /// </summary>
         /// <param name="internalStartAsync">The internal start async.</param>
         protected void SetReconnectionAction(Func<Task> internalStartAsync)
@@ -300,7 +302,7 @@ namespace VisualHFT.Commons.PluginManager
                                 int backoffDelay = (int)Math.Pow(2, _reconnectionAttempt) * 1000 + jitter.Next(0, 1000);
                                 
                                 log.Info($"{this.Name} Reconnection attempt {_reconnectionAttempt} of {maxReconnectionAttempts} after delay {backoffDelay} ms. Reason: {reason}");
-                                await Task.Delay(backoffDelay);
+                                await ReconnectBackoffDelayAsync(backoffDelay);
 
                                 // Final status check before attempting reconnection
                                 if (!forceStartRegardlessStatus && Status == ePluginStatus.STOPPED_FAILED)
@@ -311,11 +313,6 @@ namespace VisualHFT.Commons.PluginManager
 
                                 // Execute reconnection sequence
                                 await StopAsync();
-                                
-                                if (_internalStartAsync != null)
-                                {
-                                    await _internalStartAsync.Invoke();
-                                }
 
                                 // Preserve reconnection state across StartAsync
                                 var _reconnect = _reconnectionAttempt;
@@ -324,20 +321,71 @@ namespace VisualHFT.Commons.PluginManager
                                 _reconnectionAttempt = _reconnect;
                                 _pendingReconnectionRequests = _pendingRec;
 
-                                // Verify reconnection succeeded
-                                if (!forceStartRegardlessStatus && Status == ePluginStatus.STOPPED_FAILED)
+                                // A connector signals a failed start by calling HandleConnectionLost from its own
+                                // catch block, and inside this loop that call is a no-op (the re-entry guard at the
+                                // top of this method already owns the reconnection flag), so StartAsync returns
+                                // normally either way. The status it leaves behind is the only reliable signal.
+                                // The rail shows the LAST provider status announced, so each exit below announces one --
+                                // a silent give-up would keep Gemini's CONNECTED, raised right before it stamps STOPPED_FAILED.
+                                if (Status == ePluginStatus.STARTED)
                                 {
-                                    log.Debug($"{this.Name} Reconnection completed but Status = STOPPED_FAILED");
+                                    // ✅ SUCCESS: Reset counters and exit loop
+                                    log.Info($"{this.Name} Reconnection successful.");
+                                    RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.CONNECTED));
+                                    Status = ePluginStatus.STARTED;
+                                    _pendingReconnectionRequests = 0;
+                                    _reconnectionAttempt = 0;
+                                    break; // Exit retry loop on success
+                                }
+                                else if (Status == ePluginStatus.LOADED)
+                                {
+                                    // The plugin declined to start and stays idle by its own decision (e.g. no configured
+                                    // session): retrying is pointless and stamping STARTED over it would be a lie.
+                                    log.Info($"{this.Name} declined to start (Status = LOADED). Reconnection ends without marking it started.");
+                                    RaiseOnDataReceived(GetProviderModel(Status.ToSessionStatus()));
+                                    _pendingReconnectionRequests = 0;
+                                    _reconnectionAttempt = 0;
                                     break;
                                 }
+                                else if (Status == ePluginStatus.STOPPED_FAILED)
+                                {
+                                    // Deliberately NOT gated on forceStartRegardlessStatus: that flag exists to bypass
+                                    // the ENTRY guard above, so a plugin that had previously failed can be restarted at
+                                    // all. It must not override the verdict THIS attempt just produced -- Binance and
+                                    // Gemini set STOPPED_FAILED on a [CantConnectError] deliberately and without retry.
+                                    // Counters are reset here because this is now also the FORCED exit: the settings
+                                    // dialog reloads through HandleConnectionLost(force: true), and leaving the attempt
+                                    // count standing would make the loop start mid-ladder on the next reload and do
+                                    // nothing at all once it reached the cap. Before, the forced case fell through to
+                                    // the throw and was reset by HandleMaxReconnectionAttempts.
+                                    log.Debug($"{this.Name} Reconnection completed but Status = STOPPED_FAILED");
+                                    RaiseOnDataReceived(GetProviderModel(Status.ToSessionStatus()));
+                                    _pendingReconnectionRequests = 0;
+                                    _reconnectionAttempt = 0;
+                                    break;
+                                }
+                                else if (Status == ePluginStatus.STARTING)
+                                {
+                                    // STARTING is the expected shape of a failed start: base.StartAsync() stamps it
+                                    // before any connector work, and a connector reports failure by handing off to
+                                    // HandleConnectionLost, which is a no-op inside this loop (the re-entry guard at the
+                                    // top already owns the flag). Fail the attempt so the catch below counts it and
+                                    // retries, or gives up at the cap.
+                                    throw new InvalidOperationException($"{this.Name} StartAsync returned with Status = {Status}; the attempt did not reach STARTED.");
+                                }
 
-                                // ✅ SUCCESS: Reset counters and exit loop
-                                log.Info($"{this.Name} Reconnection successful.");
-                                RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.CONNECTED));
-                                Status = ePluginStatus.STARTED;
+                                // Anything else is NOT a failed attempt, so it is neither retried nor overwritten.
+                                // STOPPED/STOPPING mean somebody stopped the plugin on purpose while it was starting:
+                                // the provider rail calls the retriever's StopAsync() and force-sets STOPPED on a user
+                                // toggle-off. Retrying that fights the user for ~62s of backoff and ends in
+                                // STOPPED_FAILED, which the entry guard above then refuses to restart. Any other
+                                // status takes this same exit because it is not evidence of a failed start either:
+                                // without that evidence the loop neither retries it nor overwrites what it reports.
+                                log.Info($"{this.Name} Reconnection ended without retry: StartAsync returned with Status = {Status} (not a failed start).");
+                                RaiseOnDataReceived(GetProviderModel(Status.ToSessionStatus()));
                                 _pendingReconnectionRequests = 0;
                                 _reconnectionAttempt = 0;
-                                break; // Exit retry loop on success
+                                break;
                             }
                             catch (Exception ex)
                             {

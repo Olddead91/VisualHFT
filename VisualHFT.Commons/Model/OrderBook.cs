@@ -322,6 +322,10 @@ namespace VisualHFT.Model
             bool ret = true;
             using (_data.EnterWriteLock())
             {
+                // See Clear(): the in-lock null re-check is the guard. Reports failure rather than
+                // success, because nothing was loaded.
+                if (_data.Asks == null || _data.Bids == null)
+                    return false;
                 _data.Clear();
 
                 if (bids != null)
@@ -467,6 +471,9 @@ namespace VisualHFT.Model
         {
             using (_data.EnterWriteLock())
             {
+                // See Clear(): the in-lock null re-check is the guard.
+                if (_data.Asks == null || _data.Bids == null)
+                    return;
                 // Clear existing data and return items to shared pool to avoid allocation
                 _data.Clear();
 
@@ -629,8 +636,19 @@ namespace VisualHFT.Model
 
         public void Clear()
         {
+            // Disposed -> no-op: a reconnect can dispose the book while a frame is in flight (socket thread
+            // or queue consumer); dropping it keeps that transient benign, like the snapshot getters.
+            if (Volatile.Read(ref _disposed))
+                return;
             using (_data.EnterWriteLock())
             {
+                // OrderBook.Dispose publishes its own _disposed BEFORE _data.Dispose() nulls the side
+                // lists under this same write lock (OrderBookData.Dispose sets its own flag only AFTER
+                // nulling them), so a flag read taken before the lock is only an optimization: a caller
+                // that passed it can still arrive here after the lists are gone. The in-lock re-check is
+                // the guard (the DeleteLevel/CalculateMetrics precedent).
+                if (_data.Asks == null || _data.Bids == null)
+                    return;
                 InternalClear();
                 _data.Clear();
             }
@@ -640,6 +658,9 @@ namespace VisualHFT.Model
         {
             using (_data.EnterWriteLock())
             {
+                // See Clear(): the in-lock null re-check is the guard.
+                if (_data.Asks == null || _data.Bids == null)
+                    return;
                 InternalClear();
                 _data?.Reset();
             }
@@ -651,6 +672,9 @@ namespace VisualHFT.Model
         }
         public virtual void AddOrUpdateLevel(bool? IsBid, string EntryID, double? Price, double? Size, DateTime LocalTimeStamp, DateTime ServerTimeStamp)
         {
+            // See Clear(): a frame still in flight when a reconnect disposes the book is dropped, not thrown on.
+            if (Volatile.Read(ref _disposed))
+                return;
             if (!IsBid.HasValue)
                 return;
 
@@ -664,6 +688,8 @@ namespace VisualHFT.Model
             using (_data.EnterWriteLock())
             {
                 var _list = (IsBid.HasValue && IsBid.Value ? _data.Bids : _data.Asks);
+                if (_list == null)
+                    return;
                 BookItem? itemFound = null;
                 var targetPrice = Price.Value;  // Cache the value
                 var count = _list.Count();
@@ -707,6 +733,8 @@ namespace VisualHFT.Model
             bool willNewItemFallOut = false;
 
             var list = IsBid.Value ? _data.Bids : _data.Asks;
+            if (list == null)
+                return;
             var listCount = list.Count();
             if (IsBid.Value)
             {
@@ -776,7 +804,11 @@ namespace VisualHFT.Model
             // quantize what we store so internals never carry float dust
             Size = QuantizeToDp(Size.Value, this.SizeDecimalPlaces);
 
-            (IsBid.HasValue && IsBid.Value ? _data.Bids : _data.Asks).Update(x => x.Price == Price,
+            var list = (IsBid.HasValue && IsBid.Value ? _data.Bids : _data.Asks);
+            if (list == null)
+                return;
+
+            list.Update(x => x.Price == Price,
                 existingItem =>
                 {
                     double oldSize = existingItem.Size ?? 0.0;

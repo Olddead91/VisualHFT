@@ -5,6 +5,7 @@ using CryptoExchange.Net.Objects.Sockets;
 using Kraken.Net;
 using Kraken.Net.Clients;
 using Kraken.Net.Enums;
+using Kraken.Net.Interfaces.Clients;
 using Kraken.Net.Objects.Models;
 using Kraken.Net.Objects.Models.Socket;
 using MarketConnectors.Kraken.Model;
@@ -39,8 +40,8 @@ namespace MarketConnectors.Kraken
         private bool isReconnecting = false;
 
         private PlugInSettings _settings;
-        private KrakenSocketClient _socketClient;
-        private KrakenRestClient _restClient;
+        private IKrakenSocketClient _socketClient;
+        private IKrakenRestClient _restClient;
         // CONC-1: thread-safe — written on the WS snapshot path, read on the book + trades consumer threads.
         private readonly ConcurrentDictionary<string, VisualHFT.Model.OrderBook> _localOrderBooks = new();
         // ACC-1: per-symbol raw-DECIMAL mirror of the book, maintained solely to validate Kraken's v2 CRC32
@@ -95,24 +96,6 @@ namespace MarketConnectors.Kraken
         {
 
             await base.StartAsync();//call the base first
-            _socketClient = new KrakenSocketClient(options =>
-            {
-
-                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
-                {
-                    options.ApiCredentials = new KrakenCredentials() { Spot = new HMACCredential(_settings.ApiKey, _settings.ApiSecret) };
-                }
-                options.Environment = KrakenEnvironment.Live;
-            });
-
-            _restClient = new KrakenRestClient(options =>
-            {
-                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
-                {
-                    options.ApiCredentials = new KrakenCredentials() { Spot = new HMACCredential(_settings.ApiKey, _settings.ApiSecret) };
-                }
-                options.Environment = KrakenEnvironment.Live;
-            });
 
 
             try
@@ -130,6 +113,44 @@ namespace MarketConnectors.Kraken
             }
         }
         
+        /// <summary>Seam so a test can substitute the venue clients and observe their lifetime.</summary>
+        protected virtual IKrakenSocketClient CreateSocketClient()
+        {
+            return new KrakenSocketClient(options =>
+            {
+
+                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
+                {
+                    options.ApiCredentials = new KrakenCredentials() { Spot = new HMACCredential(_settings.ApiKey, _settings.ApiSecret) };
+                }
+                options.Environment = KrakenEnvironment.Live;
+            });
+        }
+
+        /// <summary>Seam so a test can substitute the venue clients and observe their lifetime.</summary>
+        protected virtual IKrakenRestClient CreateRestClient()
+        {
+            return new KrakenRestClient(options =>
+            {
+                if (_settings.ApiKey != "" && _settings.ApiSecret != "")
+                {
+                    options.ApiCredentials = new KrakenCredentials() { Spot = new HMACCredential(_settings.ApiKey, _settings.ApiSecret) };
+                }
+                options.Environment = KrakenEnvironment.Live;
+            });
+        }
+
+        internal void ReplaceClients()
+        {
+            // The previous clients are torn down by ClearAsync while still alive, then disposed and replaced here,
+            // under the start/stop lock, so a concurrent start cannot dispose a client another thread is subscribing on.
+            _socketClient?.Dispose();
+            _restClient?.Dispose();
+
+            _socketClient = CreateSocketClient();
+            _restClient = CreateRestClient();
+        }
+
         private async Task InternalStartAsync()
         {
             // ✅ FIX: Add synchronization
@@ -137,6 +158,7 @@ namespace MarketConnectors.Kraken
             try
             {
                 await ClearAsync();
+                ReplaceClients();
 
                 // Initialize event buffer for each symbol
                 foreach (var symbol in GetAllNormalizedSymbols())
@@ -172,20 +194,6 @@ namespace MarketConnectors.Kraken
                 Status = ePluginStatus.STOPPING;
                 log.Info($"{this.Name} is stopping.");
 
-                // ✅ FIX: Force cancel any pending reconnections by closing subscriptions first
-                foreach (var sub in deltaSubscriptions.Values)
-                {
-                    UnattachEventHandlers(sub?.Data);
-                    if (sub != null && sub.Data != null)
-                        await sub.Data.CloseAsync();
-                }
-                foreach (var sub in tradesSubscriptions.Values)
-                {
-                    UnattachEventHandlers(sub?.Data);
-                    if (sub != null && sub.Data != null)
-                        await sub.Data.CloseAsync();
-                }
-
                 await ClearAsync();
                 RaiseOnDataReceived(new List<VisualHFT.Model.OrderBook>());
                 RaiseOnDataReceived(GetProviderModel(eSESSIONSTATUS.DISCONNECTED));
@@ -200,10 +208,37 @@ namespace MarketConnectors.Kraken
 
         private async Task ClearAsync()
         {
-            // ✅ Subscription cleanup is done in StopAsync to prevent reconnection races
-            // Only unsubscribe here if not already done
-            if (_socketClient != null)
-                await _socketClient.UnsubscribeAllAsync();
+            // On the reconnect path the outgoing socket is by definition unhealthy; its teardown failing
+            // must not keep the dead client alive or strand StopAsync at STOPPING. The subscription
+            // teardown lives here rather than in StopAsync because BOTH stop paths - StopAsync and the
+            // reconnect's InternalStartAsync - must tear the subscriptions down on the live OUTGOING
+            // client and tolerate a dead one. Both maps are emptied further down, so a completed stop
+            // leaves no stale subscription behind.
+            // Error, not Warn: Telemetry/TelemetryAppender.cs sets Threshold = Level.Error, so a Warn
+            // never ships and a fleet-wide teardown failure would be invisible in production telemetry.
+            // Not LogException, which would also raise a user-facing notification for a condition this
+            // connector has already handled.
+            try
+            {
+                foreach (var sub in deltaSubscriptions.Values)
+                {
+                    UnattachEventHandlers(sub?.Data);
+                    if (sub != null && sub.Data != null)
+                        await sub.Data.CloseAsync();
+                }
+                foreach (var sub in tradesSubscriptions.Values)
+                {
+                    UnattachEventHandlers(sub?.Data);
+                    if (sub != null && sub.Data != null)
+                        await sub.Data.CloseAsync();
+                }
+                if (_socketClient != null)
+                    await _socketClient.UnsubscribeAllAsync();
+            }
+            catch (Exception ex)
+            {
+                log.Error($"{this.Name}: teardown of the outgoing socket failed; continuing with local cleanup.", ex);
+            }
                 
             _timerPing?.Stop();
             _timerPing?.Dispose();
@@ -889,20 +924,32 @@ namespace MarketConnectors.Kraken
                 _disposed = true;
                 if (disposing)
                 {
-                    foreach (var sub in deltaSubscriptions.Values)
-                        UnattachEventHandlers(sub?.Data);
-                    foreach (var sub in tradesSubscriptions.Values)
-                        UnattachEventHandlers(sub?.Data);
-                    
-                    // LIFE-4: wait (bounded) for the unsubscribe to actually complete before disposing the
-                    // socket client, instead of fire-and-forget which abandons the unsubscribe. Mirrors KuCoin.
+                    // App-exit disposal reaches the same dead subscriptions ClearAsync now tolerates, so
+                    // it needs the same guard: the LIFE-4 try below covers only the Wait, not the unattach
+                    // loops, and a throw there would skip everything after it - the ping timer, the
+                    // start/stop lock, the queues and the order books. Error, not Warn, for the reason
+                    // given in ClearAsync.
                     try
                     {
-                        _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
+                        foreach (var sub in deltaSubscriptions.Values)
+                            UnattachEventHandlers(sub?.Data);
+                        foreach (var sub in tradesSubscriptions.Values)
+                            UnattachEventHandlers(sub?.Data);
+
+                        // LIFE-4: wait (bounded) for the unsubscribe to actually complete before disposing the
+                        // socket client, instead of fire-and-forget which abandons the unsubscribe. Mirrors KuCoin.
+                        try
+                        {
+                            _socketClient?.UnsubscribeAllAsync().Wait(TimeSpan.FromSeconds(5));
+                        }
+                        catch (Exception) { /* best-effort during dispose */ }
+                        _socketClient?.Dispose();
+                        _restClient?.Dispose();
                     }
-                    catch (Exception) { /* best-effort during dispose */ }
-                    _socketClient?.Dispose();
-                    _restClient?.Dispose();
+                    catch (Exception ex)
+                    {
+                        log.Error($"{this.Name}: teardown of the outgoing socket failed during dispose; continuing with local cleanup.", ex);
+                    }
                     _timerPing?.Dispose();
 
                     // ✅ FIX: Dispose semaphore
