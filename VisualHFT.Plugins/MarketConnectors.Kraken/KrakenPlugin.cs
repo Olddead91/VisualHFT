@@ -214,10 +214,10 @@ namespace MarketConnectors.Kraken
             // reconnect's InternalStartAsync - must tear the subscriptions down on the live OUTGOING
             // client and tolerate a dead one. Both maps are emptied further down, so a completed stop
             // leaves no stale subscription behind.
-            // Error, not Warn: Telemetry/TelemetryAppender.cs sets Threshold = Level.Error, so a Warn
+            // Error, not Warn: the desktop telemetry appender ships nothing below Error, so a Warn
             // never ships and a fleet-wide teardown failure would be invisible in production telemetry.
-            // Not LogException, which would also raise a user-facing notification for a condition this
-            // connector has already handled.
+            // Not LogException: it also increments OperationalErrorsCount, which the feed-health study
+            // reads as a feed failure, and a tolerated teardown is not one.
             try
             {
                 foreach (var sub in deltaSubscriptions.Values)
