@@ -17,4 +17,8 @@
     <ProjectReference Include="..\..\VisualHFT.Commons\VisualHFT.Commons.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="MarketConnectors.Coinbase.Tests" />
+  </ItemGroup>
+
 </Project>
