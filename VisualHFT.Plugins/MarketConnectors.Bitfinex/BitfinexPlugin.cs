@@ -185,8 +185,8 @@ namespace MarketConnectors.Bitfinex
             // teardown lives here rather than in StopAsync because BOTH stop paths - StopAsync and the
             // reconnect's InternalStartAsync - must tear the subscriptions down on the live OUTGOING
             // client and tolerate a dead one.
-            // Error, not Warn: the desktop telemetry appender ships nothing below Error, so a Warn
-            // never ships and a fleet-wide teardown failure would be invisible in production telemetry.
+            // Error, not Warn: a failed socket teardown leaves the venue connection in an unknown state
+            // and is a failure to surface, not a warning to file.
             // Not LogException: it also increments OperationalErrorsCount, which the feed-health study
             // reads as a feed failure, and a tolerated teardown is not one.
             try

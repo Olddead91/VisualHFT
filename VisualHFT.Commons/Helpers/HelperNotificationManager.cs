@@ -16,9 +16,8 @@ namespace VisualHFT.Commons.Helpers
         ERROR,
         WARNING,
         TRIGGER_ACTION,
-        // GAP-MDR-16 — informational tier (below WARNING) for normal, expected
-        // outcomes that should be surfaced but are not problems (e.g. a Stop that
-        // discards an in-flight capture per the FR-03 50%-rule). Appended last so
+        // Informational tier (below WARNING) for normal, expected outcomes that
+        // should be surfaced but are not problems. Appended last so
         // existing ordinals (ERROR=0/WARNING=1/TRIGGER_ACTION=2) are unchanged.
         INFO
     }

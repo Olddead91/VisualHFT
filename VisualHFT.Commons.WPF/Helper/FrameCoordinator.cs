@@ -32,8 +32,8 @@ namespace VisualHFT.Helpers
 
         // Guards _participants against concurrent mutation. Register is always reached on the UI
         // thread (UIUpdater's constructor enforces it), but Unregister runs from UIUpdater.Dispose,
-        // which a plugin can dispose on a BACKGROUND thread (e.g. the replay session clone-swap
-        // stopping plugins off the dispatcher). Without this lock a concurrent Remove shrinks the
+        // which a plugin can dispose on a BACKGROUND thread (e.g. a plugin stopped off the
+        // dispatcher). Without this lock a concurrent Remove shrinks the
         // list mid-tick and OnFrameTick's indexer throws IndexOutOfRange — crashing the app.
         private readonly object _sync = new object();
         // Reusable per-frame buffer: OnFrameTick copies the live participant set into this UNDER the

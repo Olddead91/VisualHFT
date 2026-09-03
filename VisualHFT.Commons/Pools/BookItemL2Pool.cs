@@ -30,7 +30,7 @@ namespace VisualHFT.Commons.Pools
     /// • Zero type checking overhead
     /// • Lock-free statistics tracking
     /// • Aggressive inlining for minimal overhead
-    /// • Open source clean (no L3 contamination)
+    /// • Handles only basic BookItem instances
     /// 
     /// PERFORMANCE CHARACTERISTICS:
     /// ----------------------------
@@ -50,10 +50,8 @@ namespace VisualHFT.Commons.Pools
     /// 
     /// ARCHITECTURAL PURITY:
     /// ----------------------
-    /// • Zero knowledge of L3 concepts
     /// • Interface-based type safety
     /// • Compile-time violation detection
-    /// • Open source synchronization safe
     /// • No reflection, no runtime type checking
     /// 
     /// USAGE EXAMPLE:
@@ -112,15 +110,15 @@ namespace VisualHFT.Commons.Pools
         /// <summary>
         /// Thread-safe: Returns a basic BookItem to the pool.
         /// ULTRA-HIGH-PERFORMANCE: Zero overhead return path.
-        /// OPTIMIZED: Removed reflection - L3 validation moved to BookItemPool smart dispatcher.
+        /// OPTIMIZED: Removed reflection - no type validation on the return path.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static void Return(IBasicBookItem item)
         {
             if (item == null) return;
 
-            // OPTIMIZED: No reflection! L3 validation is handled by BookItemPool's smart dispatcher
-            // which routes L3 items to BookItemL3Pool before they ever reach here.
+            // No reflection and no type check here: BookItemPool.Return sends every BookItem to this
+            // pool unless a return handler has been registered.
             // CustomObjectPool tracks returns internally, no additional counter needed.
             _instance.Return((BookItem)item);
         }

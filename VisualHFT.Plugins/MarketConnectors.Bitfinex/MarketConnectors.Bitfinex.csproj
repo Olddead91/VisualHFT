@@ -52,8 +52,4 @@
     <ProjectReference Include="..\..\VisualHFT.Commons\VisualHFT.Commons.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <InternalsVisibleTo Include="MarketConnectors.Bitfinex.Tests" />
-  </ItemGroup>
-
 </Project>

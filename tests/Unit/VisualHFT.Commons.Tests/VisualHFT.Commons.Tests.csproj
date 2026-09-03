@@ -22,7 +22,7 @@
   </ItemGroup>
 
   <!--
-    Serialises the assembly and its test collections, matching the connector test projects. Required
+    Serialises the assembly and its test collections. Required
     here, not cosmetic: OrderBookDisposedGuardTests parks a thread on OrderBookData's
     ReaderWriterLockSlim and spins on WaitingWriteCount, and every test in this project borrows from
     the process-wide static BookItemPool that HelperCustomQueueTests also touches. Run in parallel,

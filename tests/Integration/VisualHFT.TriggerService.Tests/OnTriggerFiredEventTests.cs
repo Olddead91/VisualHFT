@@ -1,8 +1,7 @@
-﻿// T-MDR-045 (T-S08-2, T-S08-3, T-S08-5) — RED tests for
-// TriggerEngineService.OnTriggerFired event. RED until T-MDR-065 lands
-// (the event field + invocation site at TriggerEngineService.cs:285).
+﻿// Tests for the TriggerEngineService.OnTriggerFired event (the event field
+// and its invocation site in TriggerEngineService).
 //
-// Per the wiring manifest forbidden_test_fakes constraint these tests run
+// These tests use no fakes: they run
 // the real TriggerEngineService.RegisterMetric → ProcessMetric →
 // ExecuteActionAsync pipeline (no mocks).
 //
@@ -18,7 +17,7 @@
 //
 //   8. OnTriggerFired_HandlerLatency_p99_under_1ms
 //      — 10K fires, measure p99 of subscriber wall-clock latency from
-//        invocation site → assert ≤ 1 ms (FR-10 / T-S08-5).
+//        invocation site → assert ≤ 1 ms.
 
 using System;
 using System.Collections.Generic;
@@ -57,7 +56,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
         _originalConfigPath = TriggerEngineService.TriggerEngineConfigFilePath;
         _testConfigPath = Path.Combine(
             Path.GetTempPath(),
-            $"TE_T-MDR-045_{Guid.NewGuid():N}",
+            $"TE_OnTriggerFired_{Guid.NewGuid():N}",
             "TriggerEngineConfig.json");
         TriggerEngineService.TriggerEngineConfigFilePath = _testConfigPath;
 
@@ -83,11 +82,11 @@ public sealed class OnTriggerFiredEventTests : IDisposable
     }
 
     /// <summary>
-    /// Case 6 (T-S08-2): a GreaterThan rule fires once when the metric
+    /// Case 6: a GreaterThan rule fires once when the metric
     /// breaches its threshold. The subscriber receives exactly one
     /// <see cref="TriggerFiredEventArgs"/> whose Timestamp ≈ fire time
     /// (within a generous 5 s wall-clock window so CI noise does not flake
-    /// it). Post GAP-MDR-01 fix the FIRST qualifying breach fires, so a single
+    /// it). The FIRST qualifying breach fires, so a single
     /// event drives the assertion — no primer cycle.
     /// </summary>
     [Fact(Timeout = 30_000)]
@@ -114,7 +113,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
             TriggerEngineService.AddOrUpdateRule(rule);
 
             DateTime fireTime = DateTime.UtcNow;
-            // GAP-MDR-01 fix: the first qualifying breach fires. A single
+            // The first qualifying breach fires. A single
             // GreaterThan event over the threshold is enough — no primer cycle.
             TriggerEngineService.RegisterMetric(Plugin, Metric, Exchange, Symbol, 150.0, fireTime);
 
@@ -147,11 +146,11 @@ public sealed class OnTriggerFiredEventTests : IDisposable
     }
 
     /// <summary>
-    /// Case 7 (T-S08-3): a throwing subscriber must not prevent another
-    /// subscriber from receiving subsequent fires. Architecture §2.2.5:
+    /// Case 7: a throwing subscriber must not prevent another
+    /// subscriber from receiving subsequent fires. By design,
     /// TriggerEngineService catches per-subscriber exceptions and emits
     /// a WARN. We subscribe both a throwing handler and a counting
-    /// handler, fire 10× (10 RegisterMetric calls — post GAP-MDR-01 the first
+    /// handler, fire 10× (10 RegisterMetric calls — the first
     /// breach fires too, so no primer), and assert the counter reaches 10 +
     /// a WARN log per failure.
     /// </summary>
@@ -184,7 +183,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
                 cooldownSeconds: 0);
             TriggerEngineService.AddOrUpdateRule(rule);
 
-            // Post GAP-MDR-01: every qualifying breach fires, including the first.
+            // Every qualifying breach fires, including the first.
             // 10 breaches → 10 fires (cooldown 0).
             for (int i = 0; i < 10; i++)
             {
@@ -203,7 +202,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
             Assert.True(Volatile.Read(ref failingCalls) >= 10,
                 "Throwing subscriber must have been called at least 10 times.");
 
-            // Architecture §2.2.5: a WARN is emitted per swallowed exception.
+            // A WARN is emitted per swallowed exception.
             int warnCount = capture.CountWarns("OnTriggerFired");
             Assert.True(warnCount >= 10,
                 $"Expected ≥10 WARNs about OnTriggerFired subscriber; got {warnCount}.");
@@ -216,11 +215,11 @@ public sealed class OnTriggerFiredEventTests : IDisposable
     }
 
     /// <summary>
-    /// Case 8 (T-S08-5 / FR-10): with a no-op subscriber, the wall-clock
+    /// Case 8: with a no-op subscriber, the wall-clock
     /// latency between RegisterMetric → OnTriggerFired must have a p99
     /// ≤ 1 ms across 10K fires. Driven inline (no BenchmarkDotNet host)
     /// because TriggerEngineService is process-static and we're already
-    /// in a test-runner host. Post GAP-MDR-01 the first breach fires, so every
+    /// in a test-runner host. The first breach fires, so every
     /// measured RegisterMetric is a real fire — no primer needed.
     /// </summary>
     [Fact(Timeout = 120_000)]
@@ -253,7 +252,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
                 cooldownSeconds: 0);
             TriggerEngineService.AddOrUpdateRule(rule);
 
-            // Post GAP-MDR-01 the first breach fires, so no primer — every one
+            // The first breach fires, so no primer — every one
             // of the N RegisterMetric calls below is a measured fire.
             await Task.Delay(100);
 
@@ -281,7 +280,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
             double p999 = ns[Math.Min(N - 1, (int)(N * 0.999))];
 
             Assert.True(p99 <= 1_000_000.0,
-                $"p50={p50:F0} ns, p99={p99:F0} ns, p99.9={p999:F0} ns — p99 must be ≤ 1 ms (FR-10).");
+                $"p50={p50:F0} ns, p99={p99:F0} ns, p99.9={p999:F0} ns — p99 must be ≤ 1 ms.");
         }
         finally
         {
@@ -291,8 +290,8 @@ public sealed class OnTriggerFiredEventTests : IDisposable
 
     // ---------- Reflection helpers ----------------------------------------
     //
-    // Until T-MDR-065 lands, the OnTriggerFired field does not exist and
-    // every Subscribe/Unsubscribe call below throws — that is the RED gate.
+    // If the OnTriggerFired field does not exist, every Subscribe/Unsubscribe
+    // call below throws — that is the gate.
     // ----------------------------------------------------------------------
 
     private static FieldInfo GetOnTriggerFiredField()
@@ -318,7 +317,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
         if (field is null)
             throw new InvalidOperationException(
                 "TriggerEngineService.OnTriggerFired event field not found. " +
-                "Expected after T-MDR-065 wiring lands (RED until then).");
+                "The event must be declared on TriggerEngineService.");
         return field;
     }
 
@@ -333,7 +332,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
                 BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
         if (addMethod is null)
             throw new InvalidOperationException(
-                "TriggerEngineService.add_OnTriggerFired not found. RED until T-MDR-065.");
+                "TriggerEngineService.add_OnTriggerFired not found.");
         addMethod.Invoke(null, new object[] { handler });
     }
 
@@ -405,7 +404,7 @@ public sealed class OnTriggerFiredEventTests : IDisposable
 
     /// <summary>
     /// Captures log4net WARN messages so the throwing-subscriber test can
-    /// assert the per-failure WARN required by Architecture §2.2.5.
+    /// assert the per-failure WARN.
     /// </summary>
     private sealed class CaptureAppender : AppenderSkeleton, IDisposable
     {

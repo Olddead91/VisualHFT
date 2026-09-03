@@ -63,7 +63,7 @@ namespace VisualHFT.DataRetriever.TestingFramework.TestCases
 
             /// <summary>
             /// The plugin deliberately declined to start and stayed idle: Status = LOADED
-            /// (ReplayEnginePlugin.cs:617-624 — no configured session).
+            /// (a plugin with nothing configured to run, for example).
             /// </summary>
             LeaveLoaded,
 
@@ -187,8 +187,8 @@ namespace VisualHFT.DataRetriever.TestingFramework.TestCases
         }
 
         /// <summary>
-        /// A plugin may decline to start on purpose and stay LOADED (ReplayEnginePlugin.cs:617-624, no
-        /// configured session — deliberately NOT presented as a connected feed). Retrying that is
+        /// A plugin may decline to start on purpose and stay LOADED (nothing configured to run, so it
+        /// is deliberately NOT presented as a connected feed). Retrying that is
         /// pointless and overwriting its status is a lie: the loop must stop and leave LOADED alone.
         /// </summary>
         [Fact]

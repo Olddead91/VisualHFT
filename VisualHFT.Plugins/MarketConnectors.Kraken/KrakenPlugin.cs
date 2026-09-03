@@ -42,9 +42,9 @@ namespace MarketConnectors.Kraken
         private PlugInSettings _settings;
         private IKrakenSocketClient _socketClient;
         private IKrakenRestClient _restClient;
-        // CONC-1: thread-safe — written on the WS snapshot path, read on the book + trades consumer threads.
+        // Thread-safe — written on the WS snapshot path, read on the book + trades consumer threads.
         private readonly ConcurrentDictionary<string, VisualHFT.Model.OrderBook> _localOrderBooks = new();
-        // ACC-1: per-symbol raw-DECIMAL mirror of the book, maintained solely to validate Kraken's v2 CRC32
+        // Per-symbol raw-DECIMAL mirror of the book, maintained solely to validate Kraken's v2 CRC32
         // integrity checksum (the double-based display book cannot reproduce the wire precision it needs).
         // Touched only on the single book-consumer thread (and cleared in ClearAsync after that thread is joined).
         private readonly ConcurrentDictionary<string, KrakenDecimalBook> _decimalBooks = new();
@@ -57,8 +57,8 @@ namespace MarketConnectors.Kraken
         // Kraken's own book). Desync detection + resync is now armed. Revert to LogOnly if a regression surfaces.
         private enum ChecksumValidationMode { Off, LogOnly, Enforce }
         private ChecksumValidationMode _checksumMode = ChecksumValidationMode.Enforce;
-        // PERF-5: value-tuple payloads avoid a per-frame heap Tuple allocation. The isSnapshot flag routes
-        // snapshots through the SAME single-consumer queue as deltas (ACC-4/CONC-4: ordered, race-free book build).
+        // Value-tuple payloads avoid a per-frame heap Tuple allocation. The isSnapshot flag routes
+        // snapshots through the SAME single-consumer queue as deltas (ordered, race-free book build).
         private Dictionary<string, HelperCustomQueue<(DateTime? ts, string symbol, KrakenBookUpdate data, bool isSnapshot)>> _eventBuffers = new();
         private Dictionary<string, HelperCustomQueue<(string symbol, KrakenTradeUpdate trade)>> _tradesBuffers = new();
         private readonly object _buffersLock = new object(); // ✅ ADD: Thread-safe buffer access
@@ -214,8 +214,8 @@ namespace MarketConnectors.Kraken
             // reconnect's InternalStartAsync - must tear the subscriptions down on the live OUTGOING
             // client and tolerate a dead one. Both maps are emptied further down, so a completed stop
             // leaves no stale subscription behind.
-            // Error, not Warn: the desktop telemetry appender ships nothing below Error, so a Warn
-            // never ships and a fleet-wide teardown failure would be invisible in production telemetry.
+            // Error, not Warn: a failed socket teardown leaves the venue connection in an unknown state
+            // and is a failure to surface, not a warning to file.
             // Not LogException: it also increments OperationalErrorsCount, which the feed-health study
             // reads as a feed failure, and a tolerated teardown is not one.
             try
@@ -243,7 +243,7 @@ namespace MarketConnectors.Kraken
             _timerPing?.Stop();
             _timerPing?.Dispose();
 
-            // CONC-2: the book/trade consumer threads mutate the OrderBooks (and the shared BookItemPool).
+            // The book/trade consumer threads mutate the OrderBooks (and the shared BookItemPool).
             // Stop() only signals cancellation — it does NOT join — so disposing the books while a consumer
             // is mid-AddOrUpdateLevel risks an ObjectDisposedException or a double-free back into the pool.
             // Collect + clear the maps under the lock, then Dispose() each queue OUTSIDE the lock (Dispose
@@ -310,8 +310,8 @@ namespace MarketConnectors.Kraken
 
                                 foreach (var item in trade.Data)
                                 {
-                                    // ACC-3: preserve the exchange's trade execution timestamp; do NOT overwrite it
-                                    // with the local socket ReceiveTime (that destroys latency/replay fidelity).
+                                    // Preserve the exchange's trade execution timestamp; do NOT overwrite it
+                                    // with the local socket ReceiveTime (that destroys latency fidelity).
                                     buffer.Add((_normalizedSymbol, item));
                                 }
                             }
@@ -461,10 +461,10 @@ namespace MarketConnectors.Kraken
                         {
                             try
                             {
-                                // ACC-4/CONC-4: route BOTH snapshot and update frames through the same
+                                // Route BOTH snapshot and update frames through the same
                                 // single-consumer queue, so the book is seeded then mutated strictly in order
                                 // on ONE thread (no WS-callback-vs-consumer race, no inline snapshot swap).
-                                // PERF-5: value-tuple payload — no per-frame heap Tuple allocation.
+                                // Value-tuple payload — no per-frame heap Tuple allocation.
                                 bool isSnapshot = data.UpdateType != SocketUpdateType.Update;
                                 var receiveLocal = data.ReceiveTime.ToLocalTime(); // computed once per frame
                                 if (!isSnapshot)
@@ -792,7 +792,7 @@ namespace MarketConnectors.Kraken
             }
         }
         // Live snapshot handler. Runs on the single book-consumer thread, strictly in order with deltas
-        // (ACC-4/CONC-4), so the display book and the decimal ladder are always built before any delta.
+        // so the display book and the decimal ladder are always built before any delta.
         private void ApplySnapshot(KrakenBookUpdate data, string symbol, DateTime? ts)
         {
             var lob = ToOrderBookModel(data, symbol);
@@ -815,7 +815,7 @@ namespace MarketConnectors.Kraken
         /// carries a frame-level exchange timestamp (wire field "timestamp"); return it
         /// in local kind. A frame without it returns null — a default(DateTime) stamp
         /// would fabricate a colossal latency spike, and receive time must never
-        /// masquerade as exchange time (same principle as the ACC-3 trades rule).
+        /// masquerade as exchange time (same principle as the trades timestamp rule).
         /// </summary>
         public static DateTime? ResolveBookTimestamp(KrakenBookUpdate lob_update)
         {
@@ -829,7 +829,7 @@ namespace MarketConnectors.Kraken
             if (!_localOrderBooks.TryGetValue(symbol, out VisualHFT.Model.OrderBook? local_lob) || local_lob == null)
                 return;
 
-            // ACC-1/ACC-2: when integrity validation is enabled, mirror each delta into the decimal ladder in
+            // When integrity validation is enabled, mirror each delta into the decimal ladder in
             // the SAME pass that updates the display book — zero extra allocation (no ToLevels iterator, no
             // second enumeration). Kraken provides NO sequence numbers, so the CRC32 is the only desync detector.
             // The offline test-injection seam never seeds the ladder, so this is inert there.
@@ -838,14 +838,14 @@ namespace MarketConnectors.Kraken
                             && _decimalBooks.TryGetValue(symbol, out ladder)
                             && ladder.IsSeeded;
 
-            var now = DateTime.Now; // PERF-4: one wall-clock read per frame, reused across every level
+            var now = DateTime.Now; // one wall-clock read per frame, reused across every level
             try
             {
                 foreach (var item in lob_update.Bids)
                 {
                     if (item.Quantity == 0 && item.Price == 0 || item.Quantity < 0)
                         continue;
-                    // PERF-1: allocation-free primitive overloads (no per-level DeltaBookItem), mirroring KuCoin.
+                    // Allocation-free primitive overloads (no per-level DeltaBookItem), mirroring KuCoin.
                     if (item.Quantity != 0)
                         local_lob.AddOrUpdateLevel(true, string.Empty, (double)item.Price, (double)item.Quantity, now, ts ?? now);
                     else
@@ -925,7 +925,7 @@ namespace MarketConnectors.Kraken
                 if (disposing)
                 {
                     // App-exit disposal reaches the same dead subscriptions ClearAsync now tolerates, so
-                    // it needs the same guard: the LIFE-4 try below covers only the Wait, not the unattach
+                    // it needs the same guard: the bounded-wait try below covers only the Wait, not the unattach
                     // loops, and a throw there would skip everything after it - the ping timer, the
                     // start/stop lock, the queues and the order books. Error, not Warn, for the reason
                     // given in ClearAsync.
@@ -936,7 +936,7 @@ namespace MarketConnectors.Kraken
                         foreach (var sub in tradesSubscriptions.Values)
                             UnattachEventHandlers(sub?.Data);
 
-                        // LIFE-4: wait (bounded) for the unsubscribe to actually complete before disposing the
+                        // Wait (bounded) for the unsubscribe to actually complete before disposing the
                         // socket client, instead of fire-and-forget which abandons the unsubscribe. Mirrors KuCoin.
                         try
                         {

@@ -455,8 +455,8 @@ namespace VisualHFT.Commons.PluginManager
         /// <summary>
         /// Per-frame freshness guard: if a received frame's exchange timestamp is more than
         /// <paramref name="toleranceSeconds"/> behind the (virtual) clock, raise a WARNING notification.
-        /// Reads HelperTimeProvider.Now so it is deterministic under test and correct under replay (per
-        /// the replay-clock rule), and shared so every connector's hot-path freshness check is identical.
+        /// Reads HelperTimeProvider.Now so it is deterministic under test, and shared so every
+        /// connector's hot-path freshness check is identical.
         /// Returns true when a warning was raised.
         /// </summary>
         protected bool CheckFrameFreshnessAndWarn(DateTime frameTimeLocal, double toleranceSeconds = 1.0)
