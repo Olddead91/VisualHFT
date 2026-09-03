@@ -56,13 +56,11 @@ namespace VisualHFT.TriggerEngine
 
         private static readonly Channel<MetricEvent> MetricChannel = Channel.CreateUnbounded<MetricEvent>();
 
-        // Architecture §2.2.5 — additive fan-in event consumed by the
-        // MarketDataRecorder TriggerCallbackHandler (T-MDR-046) and any other
-        // subscriber that needs to react to rule fires. Per ADR-03 this is
-        // purely additive: zero behavioural change for non-subscribers. The
-        // raise site lives at the bottom of ProcessMetric (after a fire passes
-        // the cooldown gate). Subscribers are invoked individually so a
-        // throwing handler never breaks others (T-MDR-045 case 7).
+        // Additive fan-in event for any subscriber that needs to react to rule
+        // fires. Purely additive: zero behavioural change for non-subscribers.
+        // The raise site lives at the bottom of ProcessMetric (after a fire
+        // passes the cooldown gate). Subscribers are invoked individually so a
+        // throwing handler never breaks others.
         public static event Action<TriggerFiredEventArgs>? OnTriggerFired;
 
 
@@ -242,7 +240,7 @@ namespace VisualHFT.TriggerEngine
                     if (triggeringCondition == null)
                         triggeringCondition = condition;
 
-                    // OD-3 / GAP-MDR-14: a rule with a sustained Window must only
+                    // A rule with a sustained Window must only
                     // count as met once the condition has HELD for the full window.
                     // Previously ProcessMetric called EvaluateDirect unconditionally
                     // and IsConditionSatisfiedWithWindow was dead code, so windowed
@@ -291,9 +289,9 @@ namespace VisualHFT.TriggerEngine
 
                     if (!ActionLastFiredTimes.TryGetValue(actionKey, out var lastFireTime))
                     {
-                        // GAP-MDR-01: the FIRST qualifying fire from a clean
-                        // state must fire — the spec (FR-3.3.1 / S-08) treats
-                        // the first breach like any other. Previously this branch
+                        // The FIRST qualifying fire from a clean state must
+                        // fire: the first breach is treated like any other.
+                        // Previously this branch
                         // only recorded the timestamp (ExecuteActionAsync and the
                         // OnTriggerFired raise were commented out), so the first
                         // breach was silently dropped and a fire only happened on
@@ -321,12 +319,10 @@ namespace VisualHFT.TriggerEngine
                             ActionLastFiredTimes[actionKey] = e.Timestamp;
                             _ = ExecuteActionAsync(rule.Name, triggeringCondition, action, e.Plugin, e.Metric, e.Exchange, e.Symbol, e.Value, e.Timestamp);
 
-                            // Architecture §2.2.5 — raise OnTriggerFired
-                            // AFTER the cooldown passes (matches the fire
-                            // semantics of ExecuteActionAsync). Per-handler
-                            // try/catch keeps a misbehaving subscriber from
-                            // poisoning the rest of the invocation list
-                            // (T-MDR-045 case 7).
+                            // Raise OnTriggerFired AFTER the cooldown passes
+                            // (matches the fire semantics of ExecuteActionAsync).
+                            // Per-handler try/catch keeps a misbehaving subscriber
+                            // from poisoning the rest of the invocation list.
                             RaiseOnTriggerFired(rule, triggeringCondition, e);
                         }
                         // else: cooldown not passed, do nothing
@@ -353,8 +349,7 @@ namespace VisualHFT.TriggerEngine
 
         // Per-subscriber fan-out for OnTriggerFired. Iterating GetInvocationList
         // is required so a throwing subscriber does not abort the multicast — the
-        // default `event(args)` form short-circuits on the first thrown exception
-        // (Architecture §2.2.5 / T-MDR-045 case 7).
+        // default `event(args)` form short-circuits on the first thrown exception.
         private static void RaiseOnTriggerFired(TriggerRule rule, TriggerCondition condition, MetricEvent e)
         {
             var snapshot = OnTriggerFired;

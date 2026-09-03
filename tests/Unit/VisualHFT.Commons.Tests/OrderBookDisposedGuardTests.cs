@@ -47,9 +47,8 @@ namespace VisualHFT.Commons.Tests;
 /// released. The socket thread resumes PAST its own guard, takes the write lock and dereferences null.
 /// A pre-lock flag read cannot close that window — only a null re-check INSIDE the lock can, which is
 /// exactly what <c>DeleteLevel</c> and <c>CalculateMetrics</c> already do. <c>AddLevel</c> and
-/// <c>UpdateLevel</c> are worse still: they carry no guard at all and are called directly on possibly
-/// disposed books by CoinbaseL3 (MarketConnectors.CoinbaseL3/CoinbasePlugin.cs:688, :701, :1021, :1034)
-/// and ReplayEngine (MarketConnectors.ReplayEngine/ReplayEnginePlugin.cs:1296, :1309).
+/// <c>UpdateLevel</c> are worse still: they carry no guard at all, so any caller that writes a
+/// level directly can reach them on a book a reconnect has already disposed.
 ///
 /// The four <c>_WhenTheDisposeLandsAfterTheGuardPassed_</c> tests reproduce that window
 /// deterministically, without threads: dispose the book for real (side lists null, flag true), then put
@@ -203,10 +202,9 @@ public class OrderBookDisposedGuardTests
             ServerTimeStamp: DateTime.Now));
 
         Assert.True(thrown == null,
-            "AddLevel() (OrderBook.cs:699) has NO disposed guard at all and takes no lock of its own; it "
-            + "dereferenced the nulled side list at list.Count() (OrderBook.cs:717). CoinbaseL3 "
-            + "(CoinbasePlugin.cs:688, :701, :1021, :1034) and ReplayEngine (ReplayEnginePlugin.cs:1296, "
-            + ":1309) call this entry point directly on books a reconnect can dispose. It threw: "
+            "AddLevel() has NO disposed guard at all and takes no lock of its own; it "
+            + "dereferenced the nulled side list at list.Count(). A caller writing a level "
+            + "directly can reach it on a book a reconnect has disposed. It threw: "
             + Describe(thrown));
     }
 
@@ -224,9 +222,9 @@ public class OrderBookDisposedGuardTests
             ServerTimeStamp: DateTime.Now));
 
         Assert.True(thrown == null,
-            "UpdateLevel() (OrderBook.cs:776) has NO disposed guard at all and takes no lock of its own; "
-            + "it dereferenced the nulled side list at .Update(..) (OrderBook.cs:786). Reached through "
-            + "OrderBookL3.UpdateLevel (Model_L3/OrderBookL3.cs:73-77) on the L3 book path. It threw: "
+            "UpdateLevel() has NO disposed guard at all and takes no lock of its own; "
+            + "it dereferenced the nulled side list at .Update(..). Reached through "
+            + "a direct level update. It threw: "
             + Describe(thrown));
     }
 
@@ -438,8 +436,8 @@ public class OrderBookDisposedGuardTests
     public void LiveBook_StillAppliesAddLevelAndUpdateLevel()
     {
         // Same guard on the two entry points that get a null re-check for the first time: a fix that
-        // returns unconditionally (or on the wrong condition) would silence the whole L3/replay write
-        // path, which is a far worse defect than the NRE it replaces.
+        // returns unconditionally (or on the wrong condition) would silence every direct level
+        // write, which is a far worse defect than the NRE it replaces.
         using var book = new OrderBook(Symbol, PriceDecimalPlaces, MaxDepth);
 
         book.AddLevel(

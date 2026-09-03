@@ -346,7 +346,6 @@ namespace VisualHFT.ViewModel
 
         /*
          *   Stop all studies (main and children) asynchronously
-         *   ONLY FOR L3 VERSION
          */
         public async Task StopAllAsync(CancellationToken cancellationToken)
         {

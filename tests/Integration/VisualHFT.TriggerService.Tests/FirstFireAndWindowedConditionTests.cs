@@ -1,29 +1,24 @@
-// RED tests (TDD) for two TriggerEngine root-cause defects surfaced by the
-// Market Data Recorder gap analysis:
+// Tests for two TriggerEngine root-cause defects:
 //
-//   GAP-MDR-01 — A qualifying breach from a CLEAN engine state must fire.
-//     The first-fire branch (TriggerEngineService.cs:196-203) records the
-//     last-fire timestamp but leaves ExecuteActionAsync commented out and never
-//     calls RaiseOnTriggerFired, so the very first breach is silently dropped;
-//     a fire only happens on the second qualifying tick after cooldown. Spec
-//     FR-3.3.1 / S-08 AC-S08.2 requires the first fire to fire.
+//   First fire — A qualifying breach from a CLEAN engine state must fire.
+//     The first-fire branch used to record the last-fire timestamp without
+//     executing the action or raising OnTriggerFired, so the very first breach
+//     was silently dropped and a fire only happened on the second qualifying
+//     tick after cooldown. The first fire must fire.
 //
-//   GAP-MDR-14 / OD-3 — A windowed (sustained-condition) rule (Window.Duration
+//   Windowed condition — A windowed (sustained-condition) rule (Window.Duration
 //     > 0) must only fire after the condition has HELD for the window.
-//     ProcessMetric:185 calls EvaluateDirect only; IsConditionSatisfiedWithWindow
-//     is dead code, so a windowed rule fires instantly, ignoring its window.
+//     ProcessMetric used to call EvaluateDirect only, leaving
+//     IsConditionSatisfiedWithWindow unwired, so a windowed rule fired instantly.
 //
 // WHY THESE TESTS EXIST AT ALL: the original suite tested the windowed logic by
 // reflecting into the private IsConditionSatisfiedWithWindow (TestHelpers.cs:31),
 // proving the method works in isolation while never proving it is WIRED into the
 // live path. And the first-fire defect was codified as expected behavior
-// (Pattern TEST-03 "First-Fire-No-Execute"), with tests primed to skip past it.
+// ("first fire does not execute"), with tests primed to skip past it.
 // Every assertion below therefore goes through the real RegisterMetric ->
 // ProcessMetric pipeline with NO reflection into evaluation internals, so it
 // fails if the behavior is not actually reachable in production.
-//
-// These are RED until the L2 TriggerEngine fix lands (first-fire branch fires +
-// IsConditionSatisfiedWithWindow wired into ProcessMetric).
 
 using System;
 using System.Collections.Generic;
@@ -82,7 +77,7 @@ public sealed class FirstFireAndWindowedConditionTests : IDisposable
     }
 
     // ====================================================================
-    // GAP-MDR-01 — first fire from a clean state
+    // First fire from a clean state
     // ====================================================================
 
     /// <summary>
@@ -114,7 +109,7 @@ public sealed class FirstFireAndWindowedConditionTests : IDisposable
             TriggerEngineService.RegisterMetric(Plugin, Metric, Exchange, Symbol, 150.0, DateTime.UtcNow);
 
             Assert.True(fired.Wait(TimeSpan.FromSeconds(5)),
-                "GAP-MDR-01: the first qualifying breach from a clean state did not fire.");
+                "The first qualifying breach from a clean state did not fire.");
             await Task.Delay(50);
 
             lock (captured)
@@ -158,7 +153,7 @@ public sealed class FirstFireAndWindowedConditionTests : IDisposable
             var t0 = DateTime.UtcNow;
             TriggerEngineService.RegisterMetric(Plugin, Metric, Exchange, Symbol, 150.0, t0);
             Assert.True(firstFired.Wait(TimeSpan.FromSeconds(5)),
-                "GAP-MDR-01: first breach did not fire.");
+                "First breach did not fire.");
 
             // Second breach 1s later — well inside the 60s cooldown → must NOT fire.
             TriggerEngineService.RegisterMetric(Plugin, Metric, Exchange, Symbol, 160.0, t0.AddSeconds(1));
@@ -173,7 +168,7 @@ public sealed class FirstFireAndWindowedConditionTests : IDisposable
     }
 
     // ====================================================================
-    // GAP-MDR-14 / OD-3 — windowed (sustained) condition
+    // Windowed (sustained) condition
     // ====================================================================
 
     /// <summary>
@@ -251,7 +246,7 @@ public sealed class FirstFireAndWindowedConditionTests : IDisposable
             TriggerEngineService.RegisterMetric(Plugin, Metric, Exchange, Symbol, 152.0, t0.AddSeconds(5));
 
             Assert.True(fired.Wait(TimeSpan.FromSeconds(5)),
-                "GAP-MDR-14: windowed rule did not fire after the condition held beyond its window.");
+                "Windowed rule did not fire after the condition held beyond its window.");
             Assert.True(Volatile.Read(ref fireCount) >= 1);
         }
         finally

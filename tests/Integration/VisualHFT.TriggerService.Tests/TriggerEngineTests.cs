@@ -194,9 +194,9 @@ namespace VisualHFT.DataRetriever.TestingFramework.TestCases
 
             var now = DateTime.UtcNow;
 
-            // Act: first metric meets the condition — fires immediately. The spec
-            // (FR-3.3.1 / S-08) treats the first breach like any other; the prior
-            // "first fire records but does not execute" behavior was GAP-MDR-01.
+            // Act: first metric meets the condition — fires immediately. The first
+            // breach is treated like any other; the prior
+            // "first fire records but does not execute" behavior was a defect.
             TriggerEngineService.RegisterMetric(PluginID, PluginName, Exchange, Symbol, 120.0, now);
 
             await Task.Delay(200); // simulate time for async processing
@@ -225,7 +225,7 @@ namespace VisualHFT.DataRetriever.TestingFramework.TestCases
 
             var baseTime = DateTime.UtcNow;
 
-            // Act 1: first match — fires immediately (GAP-MDR-01 fix)
+            // Act 1: first match — fires immediately
             TriggerEngineService.RegisterMetric(PluginID, PluginName, Exchange, Symbol, 120.0, baseTime);
             await Task.Delay(100);
 
@@ -254,7 +254,7 @@ namespace VisualHFT.DataRetriever.TestingFramework.TestCases
 
             var baseTime = DateTime.UtcNow;
 
-            // Act: first breach — fires immediately (GAP-MDR-01 fix)
+            // Act: first breach — fires immediately
             TriggerEngineService.RegisterMetric(PluginID, PluginName, Exchange, Symbol, 120.0, baseTime);
             await Task.Delay(100);
 
