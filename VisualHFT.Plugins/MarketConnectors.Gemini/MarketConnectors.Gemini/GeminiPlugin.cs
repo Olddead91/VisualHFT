@@ -811,16 +811,6 @@ namespace MarketConnectors.Gemini
             local_lob.LastUpdated = null; //Set to null since Gemini does not provide timstamp of their messages
             RaiseOnDataReceived(local_lob);
 
-            if (lob_update.Trades != null)
-            {
-                foreach (var item in lob_update.Trades)
-                {
-                    if (item.Type.Equals("trade", StringComparison.OrdinalIgnoreCase))
-                    {
-                        UpdateTrades(item);
-                    }
-                }
-            }
 
         }
 

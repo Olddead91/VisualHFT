@@ -123,6 +123,11 @@ namespace VisualHFT.ViewModels
 
         private void _study_OnCalculated(object? sender, BaseStudyModel e)
         {
+            // A model without a value (waiting, or an error placeholder) is not a data point; plotting it draws a false zero.
+            if (e == null || !e.HasData || e.HasError)
+            {
+                return;
+            }
             /*
              * ***************************************************************************************************
              * TRANSFORM the incoming object (decouple it)
