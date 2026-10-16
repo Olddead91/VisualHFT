@@ -19,6 +19,8 @@ using Coinbase.Net;
 using CryptoExchange.Net.Authentication;
 using System.IO;
 using System.Collections.Concurrent;
+using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace MarketConnectors.Coinbase
 {
@@ -41,6 +43,12 @@ namespace MarketConnectors.Coinbase
 
         private readonly ConcurrentDictionary<string, HelperCustomQueue<Tuple<string, CoinbaseTrade>>> _tradesBuffers =
             new ConcurrentDictionary<string, HelperCustomQueue<Tuple<string, CoinbaseTrade>>>();
+
+        // Per symbol, cleared only in Dispose: a reconnect runs StopAsync then StartAsync, and both run
+        // ClearAsync, so clearing them in any of those would forget every id at each reconnect.
+        private readonly ConcurrentDictionary<string, RecentIdFilter> _tradeIdFilters = new ConcurrentDictionary<string, RecentIdFilter>();
+        private readonly ConcurrentDictionary<string, StrongBox<int>> _tradeIdSeeded = new ConcurrentDictionary<string, StrongBox<int>>();
+        private int _unparsableTradeIdLogged;
 
         private readonly ConcurrentDictionary<string, VisualHFT.Model.Order> _localUserOrders =
             new ConcurrentDictionary<string, VisualHFT.Model.Order>();
@@ -292,6 +300,8 @@ namespace MarketConnectors.Coinbase
             {
                 var _normalizedSymbol = GetNormalizedSymbol(symbol);
                 var _traderQueueRef = _tradesBuffers[_normalizedSymbol];
+                var tradeIds = _tradeIdFilters.GetOrAdd(_normalizedSymbol, _ => new RecentIdFilter(4096));
+                var seeded = _tradeIdSeeded.GetOrAdd(_normalizedSymbol, _ => new StrongBox<int>());
 
                 log.Info($"{this.Name}: sending WS Trades Subscription {_normalizedSymbol} ");
                 tradesSubscription = await _socketClient.AdvancedTradeApi.SubscribeToTradeUpdatesAsync(
@@ -303,8 +313,22 @@ namespace MarketConnectors.Coinbase
                         {
                             try
                             {
+                                // The venue can send a trade again after it was first delivered, inside a later snapshot
+                                // message or an update message. Each trade id is published once while it is among the last
+                                // 4,096 ids seen for its symbol. If the first message received for a symbol is a snapshot,
+                                // its trade ids are recorded, not published: they are trades from before the first
+                                // subscription. Later snapshots, including after a reconnect, publish only ids not yet seen.
+                                // A history id is recorded here, on receipt, because its trade is never published. A live
+                                // trade is queued unrecorded; tradesBuffers_onReadAction records its id when it publishes it.
+                                bool history = Interlocked.Exchange(ref seeded.Value, 1) == 0 && trade.UpdateType == SocketUpdateType.Snapshot;
                                 foreach (var item in trade.Data)
                                 {
+                                    if (history)
+                                    {
+                                        if (long.TryParse(item.TradeId, NumberStyles.None, CultureInfo.InvariantCulture, out var historyId))
+                                            tradeIds.TryRecord(historyId);
+                                        continue;
+                                    }
                                     item.Timestamp = trade.ReceiveTime;
                                     _traderQueueRef.Add(
                                         new Tuple<string, CoinbaseTrade>(_normalizedSymbol, item));
@@ -496,6 +520,20 @@ namespace MarketConnectors.Coinbase
 
         internal void tradesBuffers_onReadAction(Tuple<string, CoinbaseTrade> item)
         {
+            // A live trade's id is recorded when the trade is published, not on receipt: a reconnect stops
+            // the trade queue without draining it, so a trade dropped with the queue was never recorded,
+            // and the venue's resend of it is published.
+            if (long.TryParse(item.Item2.TradeId, NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+            {
+                var tradeIds = _tradeIdFilters.GetOrAdd(item.Item1, _ => new RecentIdFilter(4096));
+                if (!tradeIds.TryRecord(id))
+                    return;
+            }
+            else if (Interlocked.Exchange(ref _unparsableTradeIdLogged, 1) == 0)
+            {
+                log.Warn($"{this.Name}: trade id '{item.Item2.TradeId}' for {item.Item1} is not a number; such trades are published without the repeat check.");
+            }
+
             var trade = tradePool.Get();
             trade.Price = item.Item2.Price;
             trade.Size = Math.Abs(item.Item2.Quantity);
@@ -503,7 +541,11 @@ namespace MarketConnectors.Coinbase
             trade.Timestamp = item.Item2.Timestamp.ToLocalTime();
             trade.ProviderId = _settings.Provider.ProviderID;
             trade.ProviderName = _settings.Provider.ProviderName;
-            trade.IsBuy = item.Item2.OrderSide == OrderSide.Buy;
+            // IsBuy means the AGGRESSOR bought. The venue's trade "side" names the MAKER (the resting
+            // order) and OrderSide carries it unchanged, so a maker sell is a taker buy. Without the flip,
+            // every aggressive buy on this venue is reported as a sell, and every study that reads trade
+            // side reads this venue backwards.
+            trade.IsBuy = item.Item2.OrderSide == OrderSide.Sell;
             // The book can be ABSENT (ClearAsync emptied the map while trades were still queued),
             // not only null (not loaded yet). Both stamp mid 0; an indexer here threw
             // KeyNotFoundException into the queue's error action and requested a reconnect.
@@ -897,6 +939,8 @@ namespace MarketConnectors.Coinbase
                     foreach (var q in _tradesBuffers)
                         q.Value?.Dispose();
                     _tradesBuffers.Clear();
+                    _tradeIdFilters.Clear();
+                    _tradeIdSeeded.Clear();
 
                     if (_localOrderBooks != null)
                     {

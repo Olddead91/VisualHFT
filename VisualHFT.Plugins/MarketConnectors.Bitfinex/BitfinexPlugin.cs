@@ -7,6 +7,7 @@ using MarketConnectors.Bitfinex.Model;
 using MarketConnectors.Bitfinex.UserControls;
 using MarketConnectors.Bitfinex.ViewModel;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -25,6 +26,8 @@ using VisualHFT.Commons.Interfaces;
 using Newtonsoft.Json.Linq;
 using Newtonsoft.Json;
 using VisualHFT.Commons.Exceptions;
+using VisualHFT.Commons.Helpers;
+using System.Runtime.CompilerServices;
 
 namespace MarketConnectors.Bitfinex
 {
@@ -43,6 +46,11 @@ namespace MarketConnectors.Bitfinex
         private Dictionary<string, HelperCustomQueue<Tuple<DateTime?, string, BitfinexOrderBookEntry>>> _eventBuffers = new();
         private Dictionary<string, HelperCustomQueue<Tuple<string, BitfinexTradeSimple>>> _tradesBuffers = new();
         private readonly object _buffersLock = new object(); // ✅ ADD: Thread-safe buffer access
+
+        // Per symbol, cleared only in Dispose: a reconnect runs StopAsync then StartAsync, and both run
+        // ClearAsync, so clearing them in any of those would forget every id at each reconnect.
+        private readonly ConcurrentDictionary<string, RecentIdFilter> _tradeIdFilters = new ConcurrentDictionary<string, RecentIdFilter>();
+        private readonly ConcurrentDictionary<string, StrongBox<int>> _tradeIdSeeded = new ConcurrentDictionary<string, StrongBox<int>>();
 
         private int pingFailedAttempts = 0;
         private System.Timers.Timer _timerPing;
@@ -246,6 +254,8 @@ namespace MarketConnectors.Bitfinex
             foreach (var symbol in GetAllNonNormalizedSymbols())
             {
                 var _normalizedSymbol = GetNormalizedSymbol(symbol);
+                var tradeIds = _tradeIdFilters.GetOrAdd(_normalizedSymbol, _ => new RecentIdFilter(4096));
+                var seeded = _tradeIdSeeded.GetOrAdd(_normalizedSymbol, _ => new StrongBox<int>());
 
                 log.Info($"{this.Name}: sending WS Trades Subscription {_normalizedSymbol} ");
                 tradesSubscription = await _socketClient.ExchangeApi.SubscribeToTradeUpdatesAsync(
@@ -265,8 +275,21 @@ namespace MarketConnectors.Bitfinex
                                         return; // Buffer was cleared during reconnection
                                 }
                                 
+                                // The venue sends one trade twice ("te" then "tu") and resends recent trades in the
+                                // snapshot after each subscribe. Each trade id is published once while it is among the
+                                // last 4,096 ids seen for its symbol. If the first message received for a symbol is a
+                                // snapshot, its trade ids are recorded, not published: they are trades from before the
+                                // first subscription. A history id is recorded here, on receipt, because its trade is never
+                                // published. A live trade is queued unrecorded; tradesBuffers_onReadAction records its id
+                                // when it publishes it.
+                                bool history = Interlocked.Exchange(ref seeded.Value, 1) == 0 && trade.UpdateType == SocketUpdateType.Snapshot;
                                 foreach (var item in trade.Data)
                                 {
+                                    if (history)
+                                    {
+                                        tradeIds.TryRecord(item.Id);
+                                        continue;
+                                    }
                                     item.Timestamp = trade.ReceiveTime; //not sure why these are different
                                     buffer.Add(
                                         new Tuple<string, BitfinexTradeSimple>(_normalizedSymbol, item));
@@ -496,7 +519,15 @@ namespace MarketConnectors.Bitfinex
         }
         private void tradesBuffers_onReadAction(Tuple<string, BitfinexTradeSimple> item)
         {
-            if (!_localOrderBooks.ContainsKey(item.Item1))
+            // The book can be absent (ClearAsync emptied the map while trades were still queued). Such a
+            // trade is not published, so its id is not recorded: a later resend can still publish it.
+            if (!_localOrderBooks.TryGetValue(item.Item1, out var lob))
+                return;
+            // A live trade's id is recorded when the trade is published, not on receipt: a reconnect stops
+            // the trade queue without draining it, so a trade dropped with the queue was never recorded,
+            // and the venue's resend of it is published.
+            var tradeIds = _tradeIdFilters.GetOrAdd(item.Item1, _ => new RecentIdFilter(4096));
+            if (!tradeIds.TryRecord(item.Item2.Id))
                 return;
             var trade = tradePool.Get();
             trade.Price = item.Item2.Price;
@@ -506,7 +537,7 @@ namespace MarketConnectors.Bitfinex
             trade.ProviderId = _settings.Provider.ProviderID;
             trade.ProviderName = _settings.Provider.ProviderName;
             trade.IsBuy = item.Item2.Quantity > 0;
-            trade.MarketMidPrice = _localOrderBooks[item.Item1]?.MidPrice ?? 0;
+            trade.MarketMidPrice = lob?.MidPrice ?? 0;
 
             RaiseOnDataReceived(trade);
             tradePool.Return(trade);
@@ -807,6 +838,8 @@ namespace MarketConnectors.Bitfinex
                     foreach (var q in _tradesBuffers)
                         q.Value?.Dispose();
                     _tradesBuffers.Clear();
+                    _tradeIdFilters.Clear();
+                    _tradeIdSeeded.Clear();
 
                     if (_localOrderBooks != null)
                     {
