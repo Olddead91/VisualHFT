@@ -318,21 +318,16 @@ namespace MarketConnectors.Coinbase
                                 // 4,096 ids seen for its symbol. If the first message received for a symbol is a snapshot,
                                 // its trade ids are recorded, not published: they are trades from before the first
                                 // subscription. Later snapshots, including after a reconnect, publish only ids not yet seen.
+                                // A history id is recorded here, on receipt, because its trade is never published. A live
+                                // trade is queued unrecorded; tradesBuffers_onReadAction records its id when it publishes it.
                                 bool history = Interlocked.Exchange(ref seeded.Value, 1) == 0 && trade.UpdateType == SocketUpdateType.Snapshot;
                                 foreach (var item in trade.Data)
                                 {
-                                    if (long.TryParse(item.TradeId, NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+                                    if (history)
                                     {
-                                        if (!tradeIds.TryRecord(id) || history)
-                                            continue;
-                                    }
-                                    else if (history)
-                                    {
+                                        if (long.TryParse(item.TradeId, NumberStyles.None, CultureInfo.InvariantCulture, out var historyId))
+                                            tradeIds.TryRecord(historyId);
                                         continue;
-                                    }
-                                    else if (Interlocked.Exchange(ref _unparsableTradeIdLogged, 1) == 0)
-                                    {
-                                        log.Warn($"{this.Name}: trade id '{item.TradeId}' for {_normalizedSymbol} is not a number; such trades are published without the repeat check.");
                                     }
                                     item.Timestamp = trade.ReceiveTime;
                                     _traderQueueRef.Add(
@@ -525,6 +520,20 @@ namespace MarketConnectors.Coinbase
 
         internal void tradesBuffers_onReadAction(Tuple<string, CoinbaseTrade> item)
         {
+            // A live trade's id is recorded when the trade is published, not on receipt: a reconnect stops
+            // the trade queue without draining it, so a trade dropped with the queue was never recorded,
+            // and the venue's resend of it is published.
+            if (long.TryParse(item.Item2.TradeId, NumberStyles.None, CultureInfo.InvariantCulture, out var id))
+            {
+                var tradeIds = _tradeIdFilters.GetOrAdd(item.Item1, _ => new RecentIdFilter(4096));
+                if (!tradeIds.TryRecord(id))
+                    return;
+            }
+            else if (Interlocked.Exchange(ref _unparsableTradeIdLogged, 1) == 0)
+            {
+                log.Warn($"{this.Name}: trade id '{item.Item2.TradeId}' for {item.Item1} is not a number; such trades are published without the repeat check.");
+            }
+
             var trade = tradePool.Get();
             trade.Price = item.Item2.Price;
             trade.Size = Math.Abs(item.Item2.Quantity);

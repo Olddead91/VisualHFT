@@ -279,12 +279,17 @@ namespace MarketConnectors.Bitfinex
                                 // snapshot after each subscribe. Each trade id is published once while it is among the
                                 // last 4,096 ids seen for its symbol. If the first message received for a symbol is a
                                 // snapshot, its trade ids are recorded, not published: they are trades from before the
-                                // first subscription.
+                                // first subscription. A history id is recorded here, on receipt, because its trade is never
+                                // published. A live trade is queued unrecorded; tradesBuffers_onReadAction records its id
+                                // when it publishes it.
                                 bool history = Interlocked.Exchange(ref seeded.Value, 1) == 0 && trade.UpdateType == SocketUpdateType.Snapshot;
                                 foreach (var item in trade.Data)
                                 {
-                                    if (!tradeIds.TryRecord(item.Id) || history)
+                                    if (history)
+                                    {
+                                        tradeIds.TryRecord(item.Id);
                                         continue;
+                                    }
                                     item.Timestamp = trade.ReceiveTime; //not sure why these are different
                                     buffer.Add(
                                         new Tuple<string, BitfinexTradeSimple>(_normalizedSymbol, item));
@@ -514,7 +519,15 @@ namespace MarketConnectors.Bitfinex
         }
         private void tradesBuffers_onReadAction(Tuple<string, BitfinexTradeSimple> item)
         {
-            if (!_localOrderBooks.ContainsKey(item.Item1))
+            // The book can be absent (ClearAsync emptied the map while trades were still queued). Such a
+            // trade is not published, so its id is not recorded: a later resend can still publish it.
+            if (!_localOrderBooks.TryGetValue(item.Item1, out var lob))
+                return;
+            // A live trade's id is recorded when the trade is published, not on receipt: a reconnect stops
+            // the trade queue without draining it, so a trade dropped with the queue was never recorded,
+            // and the venue's resend of it is published.
+            var tradeIds = _tradeIdFilters.GetOrAdd(item.Item1, _ => new RecentIdFilter(4096));
+            if (!tradeIds.TryRecord(item.Item2.Id))
                 return;
             var trade = tradePool.Get();
             trade.Price = item.Item2.Price;
@@ -524,7 +537,7 @@ namespace MarketConnectors.Bitfinex
             trade.ProviderId = _settings.Provider.ProviderID;
             trade.ProviderName = _settings.Provider.ProviderName;
             trade.IsBuy = item.Item2.Quantity > 0;
-            trade.MarketMidPrice = _localOrderBooks[item.Item1]?.MidPrice ?? 0;
+            trade.MarketMidPrice = lob?.MidPrice ?? 0;
 
             RaiseOnDataReceived(trade);
             tradePool.Return(trade);
